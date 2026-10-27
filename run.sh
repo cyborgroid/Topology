@@ -1,18 +1,13 @@
 #!/usr/bin/env bash
-# QE Analog Topology 실행.
-#   ./run.sh             전체 화면
-#   ./run.sh --windowed  창 모드(개발용)
+# QE Analog Topology 를 로컬에서 띄우고 접속 주소만 출력한다.
+# 그 주소를 VS Code 의 "Open Integrated Browser" 로 연다. 브라우저를 직접 열거나 다른 작업은 하지 않는다.
+# Ctrl+C 로 종료.
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 
-if [ ! -x node_modules/.bin/electron ]; then
-  echo "의존성 설치 중…"
-  npm install --no-audit --no-fund
+if [ ! -f node_modules/three/build/three.module.js ]; then
+  echo "node_modules 가 없습니다. 먼저 npm install 을 실행하세요." >&2
+  exit 1
 fi
 
-# VS Code 터미널 등에서 상속되면 Electron 이 Node 로만 동작한다.
-unset ELECTRON_RUN_AS_NODE
-
-[ "${1:-}" = "--windowed" ] && export TOPOLOGY_WINDOWED=1
-
-exec node_modules/.bin/electron .
+exec node server/server.js

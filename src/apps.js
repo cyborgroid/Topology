@@ -1,8 +1,6 @@
-// 3D 창 안에서 동작하는 내장 앱들. 모두 window.topology(실제 OS)를 통해 동작한다.
-import { GROUPS, NODES, LINKS } from './topology.config.js';
-import { reveal } from './filegraph.js';
-
-const api = window.topology;
+// 데스크톱 뷰의 창 안에서 동작하는 내장 앱. 모두 실제 OS(api)를 통해 동작한다.
+// 폴더 탐색은 창이 아니라 다이어그램 뷰에서 스크롤로 한다.
+import { api } from './bridge.js';
 
 function h(tag, props = {}, ...children) {
   const el = Object.assign(document.createElement(tag), props);
@@ -15,46 +13,6 @@ function formatBytes(n) {
   let i = 0;
   while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
   return `${n.toFixed(i ? 1 : 0)} ${units[i]}`;
-}
-
-export function filesApp(start) {
-  return {
-    title: '파일', icon: '📁', width: 720, height: 460,
-    build(body, win) {
-      body.classList.add('app-files');
-      const pathInput = h('input', { className: 'path', spellcheck: false });
-      const up = h('button', { textContent: '↑', title: '상위 폴더' });
-      const home = h('button', { textContent: '⌂', title: '홈' });
-      const show3d = h('button', { textContent: '◈ Topology 에서 보기', title: '이 폴더를 3D Topology 에서 찾아간다' });
-      const list = h('div', { className: 'list' });
-      body.append(h('div', { className: 'toolbar' }, up, home, pathInput, show3d), list);
-      let cwd = start;
-
-      async function go(dir) {
-        const r = await api.listDir(dir);
-        if (r.error) { list.replaceChildren(h('div', { className: 'error', textContent: r.error })); return; }
-        cwd = r.path;
-        pathInput.value = cwd;
-        win.setTitle(`파일 — ${cwd.split('/').pop() || '/'}`);
-        list.replaceChildren(...r.entries.map((e) => {
-          const row = h('div', { className: 'row', tabIndex: 0 },
-            h('span', { className: 'glyph', textContent: e.dir ? '📁' : '📄' }),
-            h('span', { className: 'name', textContent: e.name }),
-            h('span', { className: 'size', textContent: e.dir ? '' : formatBytes(e.size) }));
-          row.addEventListener('dblclick', () => (e.dir ? go(e.path) : api.open(e.path)));
-          row.addEventListener('keydown', (k) => { if (k.key === 'Enter') row.dispatchEvent(new Event('dblclick')); });
-          return row;
-        }));
-        if (r.total > r.entries.length) list.append(h('div', { className: 'more', textContent: `… ${r.total - r.entries.length}개 더 있음` }));
-      }
-
-      up.addEventListener('click', () => go(`${cwd}/..`));
-      home.addEventListener('click', async () => go((await api.places()).home));
-      pathInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(pathInput.value); });
-      show3d.addEventListener('click', () => reveal(cwd));
-      go(start);
-    },
-  };
 }
 
 export function terminalApp(start) {
@@ -70,7 +28,10 @@ export function terminalApp(start) {
       const history = [];
       let cwd = start, cursor = 0;
 
-      const setPrompt = () => { prompt.textContent = `${cwd.split('/').pop() || '/'} $`; };
+      const setPrompt = () => {
+        prompt.textContent = `${cwd.split('/').pop() || '/'} $`;
+        win.setTitle(`터미널 — ${cwd.split('/').pop() || '/'}`);
+      };
       const print = (text, cls) => {
         out.append(h('span', { className: cls || '', textContent: text }));
         out.scrollTop = out.scrollHeight;
@@ -101,7 +62,7 @@ export function terminalApp(start) {
 
       print('Topology 터미널 — 명령은 bash 로 실행됩니다. (vim 같은 대화형 프로그램은 지원하지 않음)\n', 'dim');
       setPrompt();
-      win.el.addEventListener('pointerup', () => input.focus());
+      body.addEventListener('pointerup', () => input.focus());
       setTimeout(() => input.focus(), 50);
     },
   };
@@ -109,7 +70,7 @@ export function terminalApp(start) {
 
 export function systemApp() {
   return {
-    title: '시스템', icon: '🖥', width: 520, height: 360,
+    title: '시스템', icon: '🖥', width: 520, height: 340,
     build(body, win) {
       body.classList.add('app-system');
       async function refresh() {
@@ -154,23 +115,6 @@ export function networkApp() {
         );
       }
       refresh();
-    },
-  };
-}
-
-export function nodeApp(node) {
-  const def = NODES.find((n) => n.id === node.id);
-  const linked = LINKS.filter((l) => l.includes(node.id))
-    .map((l) => NODES.find((n) => n.id === (l[0] === node.id ? l[1] : l[0])).name);
-  return {
-    title: node.name, icon: '◈', width: 420, height: 240,
-    build(body) {
-      body.classList.add('app-node');
-      body.append(
-        h('div', { className: 'dim', textContent: GROUPS[def.group].label }),
-        h('p', { textContent: def.desc }),
-        h('div', { className: 'dim', textContent: `연결: ${linked.join(', ')}` }),
-      );
     },
   };
 }

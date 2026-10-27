@@ -159,8 +159,12 @@ export function removePlate(id) {
   plates.delete(id);
 }
 
-// 층 바닥판처럼 고르지 않는 장식용 메시.
+// 층 바닥판처럼 고르지 않는 장식용 메시. 폴더 안에 들어가면 개념 블록과 함께 흐려진다.
+const decor = [];
 export function addDecor(mesh) {
+  mesh.material.transparent = true;
+  mesh.userData.baseOpacity = mesh.material.opacity;
+  decor.push(mesh);
   scene.add(mesh);
   return mesh;
 }
@@ -184,18 +188,25 @@ const linkLines = new THREE.LineSegments(linkGeo, new THREE.LineBasicMaterial({ 
 linkLines.frustumCulled = false;
 scene.add(linkLines);
 
+// 흐려졌거나 숨은 블록·판으로 이어지는 선은 그리지 않는다.
+// (판은 원래 반투명하므로 visible 만 본다)
+const shown = (o) => o.visible && (!o.userData.kind || o.material.opacity > 0.45);
+
 function updateLinks() {
   const arr = linkGeo.attributes.position.array;
-  links.forEach(([a, b], i) => {
-    a.position.toArray(arr, i * 6);
-    b.position.toArray(arr, i * 6 + 3);
-  });
-  linkGeo.setDrawRange(0, links.length * 2);
+  let n = 0;
+  for (const [a, b] of links) {
+    if (!shown(a) || !shown(b)) continue;
+    a.position.toArray(arr, n * 6);
+    b.position.toArray(arr, n * 6 + 3);
+    n++;
+  }
+  linkGeo.setDrawRange(0, n * 2);
   linkGeo.attributes.position.needsUpdate = true;
 }
 
 // --- 카메라: 목표점을 중심으로 도는 궤도 ------------------------------------------
-const overview = { target: new THREE.Vector3(), offset: new THREE.Vector3(1, 0.55, 1.25).normalize().multiplyScalar(46) };
+const overview = { target: new THREE.Vector3(), offset: new THREE.Vector3(0.55, 0.35, 1).normalize().multiplyScalar(36) };
 const goal = { target: new THREE.Vector3(), sph: new THREE.Spherical(46, 1.2, 0.7) };
 const cur = { target: new THREE.Vector3(), sph: new THREE.Spherical(46, 1.2, 0.7) };
 
@@ -235,6 +246,7 @@ function chain(id = focusId) {
 export async function enter(id) {
   const node = nodes.get(id);
   if (!node || !enterable(node.userData)) return;
+  if (node.userData.data.alias) return enter(node.userData.data.alias);   // 바로가기 블록
   pull = 0;
   if (node.userData.kind === 'more') {
     // "더 보기" 블록은 같은 판에 다음 묶음을 이어 붙인다.
@@ -311,7 +323,8 @@ async function renderInfo() {
 const raycaster = new THREE.Raycaster();
 function pick(e) {
   raycaster.setFromCamera(new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1), camera);
-  return raycaster.intersectObjects([...nodes.values()], false)[0]?.object.userData.id ?? null;
+  // 흐려진 상위 단계·개념 탑 블록은 앞에 있어도 고르지 않는다.
+  return raycaster.intersectObjects([...nodes.values()].filter(shown), false)[0]?.object.userData.id ?? null;
 }
 
 const keys = { space: false, shift: false };
@@ -417,13 +430,31 @@ function update(dt, t) {
   camera.position.setFromSpherical(cur.sph).add(cur.target);
   camera.lookAt(cur.target);
 
+  // 폴더 안에서는 지금 판보다 앞(카메라 쪽)에 있는 상위 단계와 개념 탑이 시야를 가리므로 흐리게 한다.
+  const inFolder = nodes.get(focusId)?.userData.kind === 'folder';
+  const cutZ = goal.target.z + 3;
+  const fadeOf = (obj) => (inFolder && obj.position.z > cutZ ? 0.08 : 1);
   for (const mesh of nodes.values()) {
     const { id, kind, parentId, label } = mesh.userData;
     const emphasis = id === selectedId ? 0.65 : id === hoveredId ? 0.4 : id === focusId ? 0.3 : 0.12;
     mesh.material.emissiveIntensity += (emphasis - mesh.material.emissiveIntensity) * k;
-    const show = kind === 'concept' || id === focusId || id === selectedId || id === hoveredId
-      || parentId === focusId || mesh.position.distanceTo(camera.position) < LABEL_RANGE;
+    // 지금 폴더 블록은 판의 머리말로 남기되 반투명하게 둔다.
+    const fade = id === focusId ? (inFolder ? 0.5 : 1) : fadeOf(mesh);
+    mesh.material.transparent = true;
+    mesh.material.opacity += (fade - mesh.material.opacity) * k;
+    mesh.material.depthWrite = mesh.material.opacity > 0.9;
+    const show = (fade === 1 || id === focusId) && (kind === 'concept' || id === focusId || id === selectedId || id === hoveredId
+      || parentId === focusId || mesh.position.distanceTo(camera.position) < LABEL_RANGE);
     label.style.opacity = show ? '' : '0';
+  }
+  for (const plate of plates.values()) {
+    // CSS2D 이름표는 부모의 visible 을 따르지 않으므로 함께 끈다.
+    plate.visible = plate.userData.titleObj.visible = fadeOf(plate) === 1;
+  }
+  for (const mesh of decor) {
+    const fade = fadeOf(mesh);
+    mesh.material.opacity += (mesh.userData.baseOpacity * fade - mesh.material.opacity) * k;
+    mesh.children.forEach((c) => { if (c.element) c.element.style.opacity = fade === 1 ? '' : '0'; });
   }
   updateLinks();
   particles.position.y = Math.sin(t * 0.2) * 0.6;

@@ -38,7 +38,7 @@ function createWindow() {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true },
   });
   win.setMenuBarVisibility(false);
-  win.loadURL('topology://app/index.html');
+  win.loadURL(`topology://app/index.html${process.env.TOPOLOGY_QUERY ?? ''}`);
 
   // 개발 확인용: 화면을 캡처해서 파일로 저장하고 종료한다.
   const snapshot = process.env.TOPOLOGY_SNAPSHOT;

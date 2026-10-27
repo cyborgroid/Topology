@@ -18,10 +18,16 @@
 <body>
   <div id="stage"></div>
 
-  <div id="hint" class="hint">
-    <b>QE Analog Topology</b> · Scroll 전진/후진 · Shift+Scroll 좌우 · Space 상승 · Shift+Space 하강 · Drag 시선 · Home 원위치
-    · 노드 클릭 = 펼치기 · 더블클릭 = 열기
+  <!-- 다이어그램 뷰 -->
+  <nav id="crumbs" class="panel crumbs"></nav>
+  <aside id="info" class="panel info" hidden></aside>
+  <div id="diagram-hint" class="panel hint">
+    <b>Drag</b> 구조 돌려 보기 · <b>Click</b> 선택 · <b>Scroll ↑</b> 가리킨 폴더로 들어가기 · <b>Scroll ↓</b> 나오기
+    · <b>Space</b>/<b>Shift+Space</b> 위·아래에서 보기 · <b>Home</b> 전체 · <b>Tab</b> 데스크톱
   </div>
+
+  <!-- 데스크톱 뷰 -->
+  <aside id="depth-gauge" class="panel gauge"></aside>
 
   <div id="start-menu" class="start-menu" hidden>
     <input class="start-search" placeholder="앱 검색…" />
@@ -33,10 +39,13 @@
 
   <div class="taskbar">
     <button id="start-btn" class="start-btn"><img src="assets/icon.svg" alt="" /> Topology</button>
-    <button id="home-btn" class="home-btn" title="홈 시점 (Home)">◎</button>
+    <div id="view-switch" class="view-switch">
+      <button data-view="diagram" title="다이어그램 뷰 (Tab)">◈ 다이어그램</button>
+      <button data-view="desktop" title="데스크톱 뷰 (Tab)">▣ 데스크톱</button>
+    </div>
     <div id="task-list" class="task-list"></div>
     <div class="tray">
-      <span id="tray-pos" title="Topology 좌표"></span>
+      <span id="tray-pos"></span>
       <button id="tray-net" class="tray-net"></button>
       <span id="tray-bat"></span>
       <span id="tray-clock"></span>

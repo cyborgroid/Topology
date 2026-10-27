@@ -1,77 +1,76 @@
-// QE Analog Topology: 개념 노드 + 실제 파일 시스템 + 3D 데스크톱을 하나의 공간으로 묶는다.
-import * as THREE from 'three';
-import { addNode, addLink, onNode, onTick, flyHome, camera } from './scene.js';
-import { openWindow, placeDesktopIcons, initStartMenu } from './desktop.js';
-import { filesApp, terminalApp, systemApp, networkApp, nodeApp } from './apps.js';
-import { plantFileSystem, toggle } from './filegraph.js';
-import { GROUPS, NODES, LINKS } from './topology.config.js';
-
-const api = window.topology;
-
-for (const n of NODES) {
-  addNode({ id: n.id, name: n.name, kind: 'concept', color: GROUPS[n.group].color, size: n.size, pos: new THREE.Vector3(...n.pos) });
-}
-for (const [a, b] of LINKS) addLink(a, b);
+// QE Analog Topology: 블록 다이어그램(본 화면)과 3D 데스크톱, 두 뷰를 실제 OS 와 묶는다.
+import { api } from './bridge.js';
+import { setView, activeName, isTyping } from './core.js';
+import * as diagram from './diagram.js';
+import * as desktop from './desktop.js';
+import { buildTower } from './tower.js';
+import { plantFileSystem, onEnter, frameFor, describe, reveal } from './filegraph.js';
+import { terminalApp, systemApp, networkApp } from './apps.js';
+import { initTaskbar } from './taskbar.js';
 
 const places = await api.places();
 
-const BUILTINS = [
-  { name: '파일', glyph: '📁', run: () => openWindow(filesApp(places.home)) },
-  { name: '터미널', glyph: '⌨', run: () => openWindow(terminalApp(places.home)) },
-  { name: '시스템', glyph: '🖥', run: () => openWindow(systemApp()) },
-  { name: '네트워크', glyph: '📶', run: () => openWindow(networkApp()) },
-  { name: 'Topology 홈', glyph: '◎', run: flyHome },
-];
-initStartMenu({ builtins: BUILTINS, loadApps: api.apps, launch: api.launch, quit: api.quit });
-document.getElementById('home-btn').addEventListener('click', flyHome);
+const openApp = (app) => {
+  setView('desktop');
+  desktop.openWindow(app);
+};
+const showFolder = (path) => {
+  setView('diagram');
+  reveal(path);
+};
+const showRoot = () => {
+  setView('diagram');
+  diagram.enter(diagram.ROOT);
+};
 
-// 노드: 클릭 = 개념 정보 / 폴더 펼치기·접기, 더블클릭 = 폴더는 파일 창, 파일은 기본 앱으로 열기.
-onNode('click', (node) => {
-  if (node.kind === 'concept') openWindow(nodeApp(node));
-  else if (node.kind === 'folder') toggle(node.data.path);
-});
-onNode('dblclick', (node) => {
-  if (node.kind === 'concept') return;
-  if (node.data.dir) openWindow(filesApp(node.data.path));
-  else api.open(node.data.path);
+Object.assign(diagram.hooks, {
+  enter: onEnter,
+  frame: frameFor,
+  describe,
+  open: (u) => api.open(u.data.path),
+  terminal: (path) => openApp(terminalApp(path)),
 });
 
-// 바탕화면 아이콘 = 실제 바탕화면 폴더의 내용.
+buildTower();
+diagram.start();
+setView('diagram');
+
+initTaskbar({
+  builtins: [
+    { name: '다이어그램', glyph: '◈', run: showRoot },
+    { name: '데스크톱', glyph: '▣', run: () => setView('desktop') },
+    { name: '터미널', glyph: '⌨', run: () => openApp(terminalApp(places.home)) },
+    { name: '시스템', glyph: '🖥', run: () => openApp(systemApp()) },
+    { name: '네트워크', glyph: '📶', run: () => openApp(networkApp()) },
+  ],
+  onNetwork: () => openApp(networkApp()),
+});
+
+// Tab = 다이어그램 ↔ 데스크톱
+addEventListener('keydown', (e) => {
+  if (e.key !== 'Tab' || isTyping(e.target)) return;
+  e.preventDefault();
+  setView(activeName() === 'diagram' ? 'desktop' : 'diagram');
+});
+
 const desk = await api.listDir(places.desktop);
-placeDesktopIcons([
-  { name: '홈', glyph: '🏠', open: () => openWindow(filesApp(places.home)) },
-  { name: '터미널', glyph: '⌨', open: () => openWindow(terminalApp(places.home)) },
+desktop.setDesktopIcons([
+  { name: 'Topology', glyph: '◈', open: showRoot },
+  { name: '홈', glyph: '🏠', open: () => showFolder(places.home) },
+  { name: '터미널', glyph: '⌨', open: () => openApp(terminalApp(places.home)) },
   ...desk.entries.map((e) => ({
     name: e.name,
     glyph: e.dir ? '📁' : '📄',
-    open: () => (e.dir ? openWindow(filesApp(e.path)) : api.open(e.path)),
+    open: () => (e.dir ? showFolder(e.path) : api.open(e.path)),
   })),
 ]);
 
 await plantFileSystem(places);
 
-// --- tray ----------------------------------------------------------------
-const $ = (id) => document.getElementById(id);
-onTick(() => {
-  const p = camera.position;
-  $('tray-pos').textContent = `${p.x.toFixed(0)}, ${p.y.toFixed(0)}, ${p.z.toFixed(0)}`;
-});
-function clock() {
-  $('tray-clock').textContent = new Date().toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
-async function status() {
-  const [n, s] = await Promise.all([api.netInfo(), api.sysInfo()]);
-  const wifi = n.wifi.find((w) => w.inUse);
-  $('tray-net').textContent = wifi ? `📶 ${wifi.ssid}` : n.active[0] ? `🔌 ${n.active[0].name}` : '⚠ 오프라인';
-  $('tray-bat').textContent = s.battery ? `🔋 ${s.battery.capacity}%` : '';
-}
-$('tray-net').addEventListener('click', () => openWindow(networkApp()));
-clock();
-status();
-setInterval(clock, 1000);
-setInterval(status, 15000);
-
-if (new URLSearchParams(location.search).has('demo')) {
-  openWindow(filesApp(places.desktop));
-  openWindow(systemApp());
+// 개발 확인용: ?reveal=<경로> 는 그 폴더로 들어가고, ?view=desktop 은 창 두 개를 띄운 데스크톱으로 시작한다.
+const q = new URLSearchParams(location.search);
+if (q.has('reveal')) showFolder(q.get('reveal'));
+if (q.get('view') === 'desktop') {
+  openApp(systemApp());
+  openApp(terminalApp(places.home));
 }
