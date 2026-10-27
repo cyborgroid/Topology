@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Topology</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #04223a; color: #dff6ff;
+      font-family: system-ui, "Noto Sans KR", sans-serif; }
+    #app, .labels { position: fixed; inset: 0; }
+    .labels { pointer-events: none; }
+    .label { font-size: 12px; padding: 2px 6px; border-radius: 4px;
+      background: rgba(4, 34, 58, 0.6); border: 1px solid rgba(127, 231, 255, 0.3); }
+    .panel { position: fixed; padding: 10px 14px; border-radius: 8px; font-size: 13px;
+      background: rgba(4, 20, 36, 0.75); border: 1px solid rgba(127, 231, 255, 0.25); }
+    #hud { left: 16px; top: 16px; line-height: 1.6; }
+    #hud h1 { margin: 0 0 4px; font-size: 16px; }
+    #hud kbd { padding: 0 4px; border: 1px solid #5aa; border-radius: 3px; font-size: 11px; }
+    #hud-pos { font-family: ui-monospace, monospace; opacity: 0.8; }
+    #info { right: 16px; bottom: 16px; max-width: 280px; }
+    #info span { display: block; font-size: 11px; opacity: 0.7; }
+    #info p { margin: 6px 0 0; }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="hud" class="panel">
+    <h1>Topology · QE Analog Computer</h1>
+    <div><kbd>Scroll</kbd> 전진/후진 · <kbd>Shift</kbd>+<kbd>Scroll</kbd> 좌우</div>
+    <div><kbd>Space</kbd> 상승 · <kbd>Shift</kbd>+<kbd>Space</kbd> 하강</div>
+    <div><kbd>Drag</kbd> 시선 · <kbd>Click</kbd> 노드 정보</div>
+    <div id="hud-pos"></div>
+  </div>
+  <div id="info" class="panel" hidden></div>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
