@@ -1,12 +1,11 @@
-// QE Analog Topology: 블록 다이어그램(본 화면)과 3D 데스크톱, 두 뷰를 실제 OS 와 묶는다.
+// QE Analog Topology: PCB 회로 다이어그램(본 화면)과 깊이로 펼친 데스크톱, 두 뷰를 실제 OS 와 묶는다.
 import { api } from './bridge.js';
 import { setView, activeName, isTyping } from './core.js';
 import * as diagram from './diagram.js';
 import * as desktop from './desktop.js';
-import { buildTower } from './tower.js';
-import { plantFileSystem, onEnter, frameFor, describe, reveal } from './filegraph.js';
 import { terminalApp, systemApp, networkApp } from './apps.js';
 import { initTaskbar } from './taskbar.js';
+import { ANCHORS } from './topology.config.js';
 
 const places = await api.places();
 
@@ -14,30 +13,27 @@ const openApp = (app) => {
   setView('desktop');
   desktop.openWindow(app);
 };
-const showFolder = (path) => {
+const showCircuit = () => {
   setView('diagram');
-  reveal(path);
-};
-const showRoot = () => {
-  setView('diagram');
-  diagram.enter(diagram.ROOT);
+  diagram.overview();
 };
 
+// 칩에 접목된 실제 폴더는 데스크톱 뷰의 폴더 층으로 연다.
 Object.assign(diagram.hooks, {
-  enter: onEnter,
-  frame: frameFor,
-  describe,
-  open: (u) => api.open(u.data.path),
-  terminal: (path) => openApp(terminalApp(path)),
+  folders: (id) => ANCHORS.filter((a) => a.node === id && places[a.place])
+    .map((a) => ({ name: places[a.place].split('/').pop(), path: places[a.place] })),
+  openFolder: (path) => {
+    setView('desktop');
+    desktop.openPath(path);
+  },
 });
 
-buildTower();
-diagram.start();
+diagram.build();
 setView('diagram');
 
 initTaskbar({
   builtins: [
-    { name: '다이어그램', glyph: '◈', run: showRoot },
+    { name: '회로', glyph: '◈', run: showCircuit },
     { name: '데스크톱', glyph: '▣', run: () => setView('desktop') },
     { name: '터미널', glyph: '⌨', run: () => openApp(terminalApp(places.home)) },
     { name: '시스템', glyph: '🖥', run: () => openApp(systemApp()) },
@@ -53,23 +49,18 @@ addEventListener('keydown', (e) => {
   setView(activeName() === 'diagram' ? 'desktop' : 'diagram');
 });
 
-const desk = await api.listDir(places.desktop);
-desktop.setDesktopIcons([
-  { name: 'Topology', glyph: '◈', open: showRoot },
-  { name: '홈', glyph: '🏠', open: () => showFolder(places.home) },
-  { name: '터미널', glyph: '⌨', open: () => openApp(terminalApp(places.home)) },
-  ...desk.entries.map((e) => ({
-    name: e.name,
-    glyph: e.dir ? '📁' : '📄',
-    open: () => (e.dir ? showFolder(e.path) : api.open(e.path)),
-  })),
-]);
+await desktop.init({
+  places,
+  specials: [
+    { name: 'Topology 회로', glyph: '◈', open: showCircuit },
+    { name: '홈', glyph: '🏠', path: places.home },
+    { name: '터미널', glyph: '⌨', open: () => openApp(terminalApp(places.home)) },
+  ],
+});
 
-await plantFileSystem(places);
-
-// 개발 확인용: ?reveal=<경로> 는 그 폴더로 들어가고, ?view=desktop 은 창 두 개를 띄운 데스크톱으로 시작한다.
+// 개발 확인용: ?open=<경로> 는 데스크톱에서 그 폴더 층까지 열고, ?view=desktop 은 창 두 개를 띄운다.
 const q = new URLSearchParams(location.search);
-if (q.has('reveal')) showFolder(q.get('reveal'));
+if (q.has('open')) diagram.hooks.openFolder(q.get('open'));
 if (q.get('view') === 'desktop') {
   openApp(systemApp());
   openApp(terminalApp(places.home));

@@ -1,5 +1,5 @@
-// Topology.md 의 개념을 블록 코딩 스택으로 옮긴 설정.
-// 블록은 위에서 아래로 실행되는 순서대로 층(TIERS)을 이루며 쌓인다.
+// Topology.md 의 개념을 PCB 회로로 옮긴 설정.
+// 층(TIERS)은 위에서 아래로 쌓인 기판 레이어이고, 개념은 칩, LINKS 는 배선이다.
 
 export const GROUPS = {
   core:     { color: 0x2fb6d9, label: 'Topology' },
@@ -26,7 +26,7 @@ export const NODES = [
   { id: 'bigdata',    name: '빅데이터',    group: 'network',  desc: '네트워크의 모체가 되는 출처.' },
 ];
 
-// 블록 스택: 위(1층)에서 아래로. QE 는 모든 것을 여는 시작 블록이다.
+// 기판 레이어: 위(1층)에서 아래로. QE 가 맨 위에서 신호를 연다.
 export const TIERS = [
   { name: '① 자연 · 양자',     blocks: ['qe'] },
   { name: '② 하드웨어',        blocks: ['chassis', 'circuit'] },
@@ -36,7 +36,7 @@ export const TIERS = [
   { name: '⑥ 네트워크',        blocks: ['network', 'phone', 'data', 'vpn', 'wifi', 'bigdata'] },
 ];
 
-// 개념 사이의 관계(Topology.md [결과]). 정보 패널에 표시한다.
+// 개념 사이의 관계(Topology.md [결과]) = 배선. 다른 층끼리는 비아로 이어진다.
 export const LINKS = [
   ['topology', 'qe'],
   ['topology', 'instrument'],
@@ -58,7 +58,7 @@ export const LINKS = [
   ['bigdata', 'data'],
 ];
 
-// 실제 폴더를 개념 블록 뒤에 접목한다. place 는 app/os-api.js 의 places() 키.
+// 실제 폴더를 개념 칩에 접목한다(정보 패널에서 데스크톱 폴더 층으로 열기). place 는 app/os-api.js 의 places() 키.
 export const ANCHORS = [
   { place: 'home',      node: 'topology',   reason: '모든 데이터의 시작점' },
   { place: 'desktop',   node: 'topology',   reason: '화면 = Topology' },
@@ -71,10 +71,7 @@ export const ANCHORS = [
   { place: 'music',     node: 'qe',         reason: '자연의 소리' },
 ];
 
-export const FILE_COLORS = { folder: 0x3d8fd1, file: 0x8fa9bf, more: 0x4d6478, plate: 0x7fe7ff };
-
 export const CONTROLS = {
   orbitSensitivity: 0.005,
-  riseSpeed: 1.2,
   fineFactor: 0.4,
 };
