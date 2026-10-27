@@ -1,28 +1,25 @@
-// 다이어그램 뷰: Quantum Brain — QE(양자)로 짠 AI 구조(양자 신경망)를 3D 로 보여 준다.
-// 큐비트(개념)는 원형 고리로 놓이고, 신경망의 층(LAYERS)이 그 고리를 따라 앞으로 이어져 원통을 이룬다.
-// 게이트는 블록이고, 얽힘(CX)은 원통 안쪽을 가로지르는 연결선이다.
-// 상태는 실제로 계산하며(quantum.js), 순전파 커서가 지나갈 때마다 블로흐 구가 바뀐다.
+// 다이어그램 뷰: Quantum Neuron Block Computing 의 3D 조립판.
+// No Base(빈 판)에서 시작해, 기능 모듈 블록을 꺼내 놓고 호환되는 단자끼리 이어 체계화된 시스템을 쌓아 올린다.
+// 조립이 바뀌거나 환경 값이 바뀔 때마다 시스템 전체를 계산해(blocks.js) 블록마다 양자 뉴런의 상태를 보여 준다.
 import * as THREE from 'three';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { canvas, registerView, isActive, isTyping, isUi, onViewChange } from './core.js';
-import { GROUPS, NODES, QUBITS, ROLES, LAYERS, GATES, CONTROLS } from './topology.config.js';
-import { QuantumState } from './quantum.js';
+import { CONTROLS, NODES } from './topology.config.js';
+import { BLOCK_TYPES, SIGNALS, createBlock, canConnect, connect, removeBlock, evaluate, emptyProgram } from './blocks.js';
 
 const WATER = 0x04223a;
-const RING = 7;          // 큐비트 고리의 반지름
-const COL = 1.7;         // 게이트 열 간격
-const LAYER_GAP = 3.2;   // 층 사이 간격
-const SPEED = 2.5;       // 순전파 속도(게이트/초)
+const BW = 2.8, BH = 0.6, BD = 1.8;   // 블록 크기
+const TERM_R = 0.2;
 
 export const scene = new THREE.Scene();
 scene.background = new THREE.Color(WATER);
-scene.fog = new THREE.FogExp2(WATER, 0.007);
+scene.fog = new THREE.FogExp2(WATER, 0.012);
 scene.add(new THREE.HemisphereLight(0xbff4ff, 0x021018, 1.3));
-const sun = new THREE.DirectionalLight(0xffffff, 1.6);
-sun.position.set(-10, 30, 25);
+const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+sun.position.set(-8, 25, 15);
 scene.add(sun);
 
-export const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 800);
+export const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 500);
 
 const labels = new CSS2DRenderer();
 labels.domElement.className = 'layer labels';
@@ -31,385 +28,548 @@ labels.setSize(innerWidth, innerHeight);
 
 const infoEl = document.getElementById('info');
 const hintEl = document.getElementById('diagram-hint');
+const paletteEl = document.getElementById('palette');
+const nobaseEl = document.getElementById('nobase');
 
+// Topology 환경과 잇는 통로 (main.js 가 채운다)
 export const hooks = {
-  folders: () => [],      // 큐비트(개념)에 접목된 실제 폴더 [{ name, path }]
-  openFolder: () => {},   // 데스크톱 뷰에서 그 폴더 열기
+  save: () => {},            // 프로그램 저장
+  dataPlaces: () => [],      // 데이터 블록이 고를 수 있는 폴더 [{ name, path }]
+  folders: () => [],         // 개념 id 에 접목된 폴더 [{ name, path }]
+  openFolder: () => {},      // 데스크톱 폴더 층으로 열기
+  openNetwork: () => {},
+  openTerminal: () => {},
+  openSystem: () => {},      // 데스크톱의 QE 시스템 창
+  changed: () => {},         // 평가 결과가 바뀜 (시스템 창, 작업 표시줄 갱신)
 };
 
-const defs = Object.fromEntries(NODES.map((n) => [n.id, n]));
-const qIndex = Object.fromEntries(QUBITS.map((id, i) => [id, i]));
-const N = QUBITS.length;
-const colorOf = (id) => GROUPS[defs[id].group].color;
-const hex = (c) => `#${c.toString(16).padStart(6, '0')}`;
+// --- 조립판 (No Base) -----------------------------------------------------------
+const BOARD = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const grid = new THREE.GridHelper(80, 40, 0x2a6f8f, 0x123c55);
+grid.material.transparent = true;
+grid.material.opacity = 0.5;
+scene.add(grid);
 
-// 고리 위 큐비트 q 의 x 위치에서의 점 (QE 가 맨 위)
-function ringPos(q, x, r = RING) {
-  const a = Math.PI / 2 - (q / N) * Math.PI * 2;
-  return new THREE.Vector3(x, r * Math.sin(a), r * Math.cos(a));
+let program = emptyProgram();
+let env = {};
+let result = { state: new Map(), live: new Set(), system: null };
+
+// --- 블록 그리기 -----------------------------------------------------------------
+const roundedSlab = (() => {
+  const s = new THREE.Shape();
+  const r = 0.22, w = BW / 2, d = BD / 2;
+  s.moveTo(-w + r, -d);
+  s.lineTo(w - r, -d); s.quadraticCurveTo(w, -d, w, -d + r);
+  s.lineTo(w, d - r); s.quadraticCurveTo(w, d, w - r, d);
+  s.lineTo(-w + r, d); s.quadraticCurveTo(-w, d, -w, d - r);
+  s.lineTo(-w, -d + r); s.quadraticCurveTo(-w, -d, -w + r, -d);
+  const g = new THREE.ExtrudeGeometry(s, { depth: BH, bevelEnabled: true, bevelThickness: 0.04, bevelSize: 0.04, bevelSegments: 2 });
+  g.rotateX(-Math.PI / 2);   // 눕혀서 위로 BH 만큼 솟게
+  return g;
+})();
+const termGeo = new THREE.SphereGeometry(TERM_R, 16, 12);
+
+const views = new Map();   // blockId -> { group, body, terms, el, bloch }
+const pickBodies = [];
+const pickTerms = [];
+
+// 입력 단자는 왼쪽 면, 출력 단자는 오른쪽 면에 고르게
+function portOffset(def, side, portId) {
+  const list = def[side];
+  const i = list.findIndex((p) => p.id === portId);
+  const z = list.length === 1 ? 0 : (i - (list.length - 1) / 2) * 0.62;
+  return new THREE.Vector3(side === 'ins' ? -BW / 2 - 0.2 : BW / 2 + 0.2, BH / 2, z);
 }
 
-function label(text, className, parent, position, center = [0.5, 0.5]) {
+function makeBloch(group) {
+  const holder = new THREE.Group();
+  holder.position.set(0, BH + 0.8, 0);
+  holder.add(new THREE.Mesh(new THREE.SphereGeometry(0.45, 16, 10), new THREE.MeshBasicMaterial({ color: 0x9fe8ff, wireframe: true, transparent: true, opacity: 0.25 })));
+  const arrow = new THREE.Group();
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 1, 6).translate(0, 0.5, 0), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  const head = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.18, 10), new THREE.MeshBasicMaterial({ color: 0xfff1a8 }));
+  arrow.add(shaft, head);
+  holder.add(arrow);
+  group.add(holder);
+  return { holder, arrow, shaft, head };
+}
+
+function buildBlockView(b) {
+  const def = BLOCK_TYPES[b.type];
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(roundedSlab, new THREE.MeshStandardMaterial({ color: def.color, emissive: def.color, emissiveIntensity: 0.15, roughness: 0.45 }));
+  body.userData = { kind: 'block', id: b.id };
+  group.add(body);
+  pickBodies.push(body);
+
+  const terms = [];
+  for (const side of ['ins', 'outs']) {
+    for (const p of def[side]) {
+      const color = SIGNALS[p.type].color;
+      const mesh = new THREE.Mesh(termGeo, new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.5 }));
+      mesh.position.copy(portOffset(def, side, p.id));
+      mesh.userData = { kind: 'term', id: b.id, side, port: p.id, type: p.type };
+      group.add(mesh);
+      pickTerms.push(mesh);
+      terms.push(mesh);
+    }
+  }
+
   const el = document.createElement('div');
-  el.className = `label ${className}`;
-  el.textContent = text;
-  const obj = new CSS2DObject(el);
-  obj.position.copy(position);
-  obj.center.set(...center);
-  parent.add(obj);
-  return el;
+  el.className = 'label label-block';
+  el.innerHTML = '<span class="name"></span><span class="out"></span>';
+  const label = new CSS2DObject(el);
+  label.position.set(0, BH + 0.05, BD / 2 + 0.1);
+  label.center.set(0.5, 0);
+  group.add(label);
+
+  scene.add(group);
+  return { group, body, terms, el, bloch: def.neuron ? makeBloch(group) : null };
 }
 
-const involved = (g) => [...(g.controls ?? []), ...g.targets];
-
-// --- 순전파 계산: frames[g] = 게이트 g 직전의 블로흐 벡터들 ----------------------------
-const frames = [];
-function simulate() {
-  const s = new QuantumState(N);
-  const snap = () => frames.push(QUBITS.map((_, q) => s.bloch(q)));
-  snap();
-  for (const g of GATES) {
-    const ts = g.targets.map((id) => qIndex[id]);
-    if (g.kind === 'H') ts.forEach((q) => s.h(q));
-    if (g.kind === 'RX') ts.forEach((q) => s.rx(q, g.angle));
-    if (g.kind === 'RY') ts.forEach((q) => s.ry(q, g.angle));
-    if (g.kind === 'CX') for (const c of g.controls) for (const t of g.targets) s.cx(qIndex[c], qIndex[t]);
-    snap();
-  }
+function disposeView(v) {
+  scene.remove(v.group);
+  v.group.traverse((o) => { if (o.element) o.element.remove(); });
+  pickBodies.splice(pickBodies.indexOf(v.body), 1);
+  v.terms.forEach((t) => pickTerms.splice(pickTerms.indexOf(t), 1));
+  v.body.material.dispose();
 }
 
-// --- 배치: 층마다 겹치지 않는 게이트는 같은 열에 놓는다 -----------------------------------
-const gateX = [];
-const layerSpan = [];
-let xStart = 0, xEnd = 0;
-function layout() {
-  let x = 0;
-  for (const layer of LAYERS) {
-    const busy = new Array(N).fill(0);
-    let cols = 1;
-    GATES.forEach((g, i) => {
-      if (g.layer !== layer.id) return;
-      const qs = involved(g).map((id) => qIndex[id]);
-      const col = Math.max(...qs.map((q) => busy[q]));
-      qs.forEach((q) => { busy[q] = col + 1; });
-      gateX[i] = x + col * COL;
-      cols = Math.max(cols, col + 1);
-    });
-    layerSpan.push({ layer, from: x - COL / 2, to: x + (cols - 1) * COL + COL / 2, first: GATES.findIndex((g) => g.layer === layer.id) });
-    x += (cols - 1) * COL + LAYER_GAP;
-  }
-  xStart = -2;
-  xEnd = x - LAYER_GAP + 2;
+// --- 연결선 ----------------------------------------------------------------------
+const wireViews = new Map();   // wireId -> { mesh, curve, type }
+const pickWires = [];
+
+function termWorld(blockId, side, portId) {
+  const b = program.blocks.find((x) => x.id === blockId);
+  return portOffset(BLOCK_TYPES[b.type], side, portId).add(new THREE.Vector3(b.x, 0, b.z));
 }
 
-// --- 그리기 ---------------------------------------------------------------------
-const pickables = [];       // 고를 수 있는 메시 (userData: { type, index })
-const gateParts = [];       // gateParts[g] = 그 게이트의 재질들
-const bloch = [];           // bloch[q] = { arrow, shaft, head, dot }
-const readouts = new Map(); // 출력 큐비트 -> 확률 막대 라벨
-let cursor;
+function wireCurve(a, b) {
+  const lift = Math.min(3, 0.6 + a.distanceTo(b) * 0.15);
+  return new THREE.CubicBezierCurve3(
+    a,
+    a.clone().add(new THREE.Vector3(1.6, lift, 0)),
+    b.clone().add(new THREE.Vector3(-1.6, lift, 0)),
+    b,
+  );
+}
 
-const material = (color, intensity = 0.25, extra = {}) => new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: intensity, roughness: 0.4, ...extra });
-
-function buildWires() {
-  QUBITS.forEach((id, q) => {
-    const color = colorOf(id);
-    const a = ringPos(q, xStart - 1.5), b = ringPos(q, xEnd + 1);
-    const wire = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, a.distanceTo(b), 8), material(color, 0.5));
-    wire.position.copy(a).add(b).multiplyScalar(0.5);
-    wire.rotation.z = Math.PI / 2;
-    wire.userData = { type: 'qubit', index: q };
-    scene.add(wire);
-    pickables.push(wire);
-
-    // 시작점의 블로흐 구
-    const center = ringPos(q, xStart - 4);
-    const sphere = new THREE.Mesh(
-      new THREE.SphereGeometry(0.95, 20, 14),
-      new THREE.MeshBasicMaterial({ color, wireframe: true, transparent: true, opacity: 0.22 }),
+function rebuildWires() {
+  for (const v of wireViews.values()) { scene.remove(v.mesh); v.mesh.geometry.dispose(); v.mesh.material.dispose(); }
+  wireViews.clear();
+  pickWires.length = 0;
+  for (const w of program.wires) {
+    const b = program.blocks.find((x) => x.id === w.from.block);
+    const type = BLOCK_TYPES[b.type].outs.find((p) => p.id === w.from.port).type;
+    const curve = wireCurve(termWorld(w.from.block, 'outs', w.from.port), termWorld(w.to.block, 'ins', w.to.port));
+    const color = SIGNALS[type].color;
+    const mesh = new THREE.Mesh(
+      new THREE.TubeGeometry(curve, 40, 0.06, 8, false),
+      new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.4, transparent: true, opacity: 0.9 }),
     );
-    sphere.position.copy(center);
-    sphere.userData = { type: 'qubit', index: q };
-    scene.add(sphere);
-    pickables.push(sphere);
-    const arrow = new THREE.Group();
-    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1, 8).translate(0, 0.5, 0), material(0xffffff, 0.6));
-    const head = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.32, 12), material(color, 0.9));
-    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8), material(color, 0.9));
-    arrow.add(shaft, head);
-    arrow.position.copy(center);
-    dot.position.copy(center);
-    scene.add(arrow, dot);
-    bloch.push({ arrow, shaft, head, dot });
-
-    const out = center.clone().sub(new THREE.Vector3(center.x, 0, 0)).setLength(1.9);
-    const el = label(`|0⟩ ${defs[id].name}`, 'label-qubit', sphere, out);
-    el.style.setProperty('--q', hex(color));
-    el.dataset.role = ROLES[id];
-  });
+    mesh.userData = { kind: 'wire', id: w.id };
+    scene.add(mesh);
+    pickWires.push(mesh);
+    wireViews.set(w.id, { mesh, curve, type });
+  }
 }
 
-function gateBlock(kind, pos, g, color) {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.95, 0.95), material(color, 0.3));
-  mesh.position.copy(pos);
-  mesh.userData = { type: 'gate', index: g };
-  scene.add(mesh);
-  pickables.push(mesh);
-  // 블록에는 종류만 쓰고, 회전 각도는 정보 패널에서 보여 준다.
-  label({ H: 'H', M: 'M', RX: 'Rx', RY: 'Ry' }[kind], 'label-gate', mesh, new THREE.Vector3(0, 0, 0));
-  return mesh.material;
-}
+// 신호가 흐르는 연결선 위의 펄스
+const PULSES = 3, MAX_PULSES = 1800;
+const pulseGeo = new THREE.BufferGeometry();
+pulseGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(MAX_PULSES * 3), 3));
+const pulses = new THREE.Points(pulseGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.22, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+pulses.frustumCulled = false;
+scene.add(pulses);
 
-function buildGates() {
-  GATES.forEach((g, i) => {
-    const x = gateX[i];
-    const mats = [];
-    if (g.kind === 'CX') {
-      // 제어 = 점, 대상 = ⊕ 고리, 둘을 원통 안쪽을 가로지르는 선으로 잇는다.
-      for (const c of g.controls) {
-        const p = ringPos(qIndex[c], x);
-        const dot = new THREE.Mesh(new THREE.SphereGeometry(0.24, 14, 10), material(0x7fe7ff, 0.6));
-        dot.position.copy(p);
-        dot.userData = { type: 'gate', index: i };
-        scene.add(dot);
-        pickables.push(dot);
-        mats.push(dot.material);
-        for (const t of g.targets) {
-          const q = ringPos(qIndex[t], x);
-          const link = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, p.distanceTo(q), 6), material(0x7fe7ff, 0.4, { transparent: true, opacity: 0.8 }));
-          link.position.copy(p).add(q).multiplyScalar(0.5);
-          link.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), q.clone().sub(p).normalize());
-          scene.add(link);
-          mats.push(link.material);
+// 단자를 끌 때 따라오는 임시 선
+const ghost = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6 }));
+ghost.visible = false;
+scene.add(ghost);
+
+// --- 조립이나 환경이 바뀔 때마다 ----------------------------------------------------
+function refresh(save = true) {
+  const ids = new Set(program.blocks.map((b) => b.id));
+  for (const [id, v] of views) if (!ids.has(id)) { disposeView(v); views.delete(id); }
+  for (const b of program.blocks) {
+    if (!views.has(b.id)) views.set(b.id, buildBlockView(b));
+    views.get(b.id).group.position.set(b.x, 0, b.z);
+  }
+  rebuildWires();
+  result = evaluate(program, env);
+
+  for (const b of program.blocks) {
+    const v = views.get(b.id);
+    const st = result.state.get(b.id) ?? { status: 'idle' };
+    v.el.querySelector('.name').textContent = b.name;
+    v.el.dataset.status = st.status;
+    v.el.querySelector('.out').textContent = st.status === 'ok' ? `${Math.round(st.value * 100)}%` : st.status === 'idle' ? '대기' : '오류';
+    v.body.material.emissiveIntensity = st.status === 'ok' ? 0.1 + st.value * 0.6 : 0.02;
+    v.body.material.color.set(st.status === 'error' ? 0xa83a3a : st.status === 'idle' ? 0x4a5866 : BLOCK_TYPES[b.type].color);
+    if (v.bloch) {
+      v.bloch.holder.visible = !!st.bloch;
+      if (st.bloch) {
+        const d = new THREE.Vector3(st.bloch[0], st.bloch[2], st.bloch[1]);   // 블로흐 z → 위
+        const len = d.length() * 0.45;
+        v.bloch.arrow.visible = len > 0.03;
+        if (v.bloch.arrow.visible) {
+          v.bloch.arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize());
+          v.bloch.shaft.scale.y = Math.max(len - 0.1, 0.01);
+          v.bloch.head.position.y = Math.max(len - 0.05, 0.05);
         }
       }
-      for (const t of g.targets) {
-        const p = ringPos(qIndex[t], x);
-        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.4, 0.07, 8, 24), material(0x7fe7ff, 0.6));
-        ring.position.copy(p);
-        ring.rotation.y = Math.PI / 2;
-        ring.userData = { type: 'gate', index: i };
-        scene.add(ring);
-        pickables.push(ring);
-        mats.push(ring.material);
-      }
-    } else {
-      const color = g.kind === 'H' ? 0xe0b341 : g.kind === 'M' ? 0x3a4b5c : g.layer === 'input' ? 0x2fd6a0 : 0xd55fbf;
-      for (const t of g.targets) mats.push(gateBlock(g.kind, ringPos(qIndex[t], x), i, color));
     }
-    gateParts[i] = mats;
-  });
-
-  // 출력 큐비트의 측정값: 마지막 열 바깥에 확률 막대
-  const m = GATES.length - 1;
-  for (const id of GATES[m].targets) {
-    const pos = ringPos(qIndex[id], gateX[m] + 2.2);
-    const el = label('', 'label-readout', scene, pos, [0, 0.5]);
-    el.innerHTML = '<span class="name"></span><span class="bar"><i></i></span><span class="value"></span>';
-    el.querySelector('.name').textContent = defs[id].name;
-    readouts.set(id, el);
   }
+
+  nobaseEl.hidden = program.blocks.length > 0 || !isActive(view);
+  renderPaletteStatus();
+  renderInfo();
+  hooks.changed(snapshot());
+  if (save) hooks.save(program);
 }
 
-function buildLayers() {
-  layerSpan.forEach((span, i) => {
-    const len = span.to - span.from;
-    const shell = new THREE.Mesh(
-      new THREE.CylinderGeometry(RING + 1.3, RING + 1.3, len, 48, 1, true),
-      new THREE.MeshBasicMaterial({ color: 0x7fe7ff, transparent: true, opacity: 0.035, side: THREE.DoubleSide, depthWrite: false }),
-    );
-    shell.rotation.z = Math.PI / 2;
-    shell.position.set((span.from + span.to) / 2, 0, 0);
-    scene.add(shell);
-    for (const x of [span.from, span.to]) {
-      const edge = new THREE.Mesh(new THREE.TorusGeometry(RING + 1.3, 0.03, 6, 64), new THREE.MeshBasicMaterial({ color: 0x7fe7ff, transparent: true, opacity: 0.35 }));
-      edge.position.set(x, 0, 0);
-      edge.rotation.y = Math.PI / 2;
-      scene.add(edge);
-    }
-    // 짧은 층이 이어지면 이름이 겹치므로 높이를 번갈아 둔다.
-    const el = label(span.layer.name, 'label-layer', scene, new THREE.Vector3((span.from + span.to) / 2, RING + 2.4 + (i % 2) * 1.6, 0));
-    el.title = span.layer.desc;
-    el.addEventListener('click', () => { time = span.first; playing = false; selectLayer(span); });
-  });
-
-  // 순전파 커서: 지금 계산 중인 위치를 가로지르는 원판
-  cursor = new THREE.Mesh(
-    new THREE.CircleGeometry(RING + 1.3, 64),
-    new THREE.MeshBasicMaterial({ color: 0xfff1a8, transparent: true, opacity: 0.07, side: THREE.DoubleSide, depthWrite: false }),
-  );
-  cursor.rotation.y = Math.PI / 2;
-  cursor.add(new THREE.Mesh(new THREE.TorusGeometry(RING + 1.3, 0.06, 6, 64), new THREE.MeshBasicMaterial({ color: 0xfff1a8 })));
-  scene.add(cursor);
+export function setEnv(next) {
+  env = next;
+  refresh(false);
 }
 
-// --- 순전파 재생 -------------------------------------------------------------------
-let time = 0, playing = true, holdUntil = 0;
-const gateIndex = () => Math.min(Math.floor(time), GATES.length - 1);
-const cursorX = () => {
-  const i = Math.floor(time), f = time - i;
-  if (i >= GATES.length - 1) return gateX[GATES.length - 1] + f * 2;
-  return THREE.MathUtils.lerp(gateX[i], gateX[i + 1], f);
-};
-
-// 지금 시점의 큐비트 q 블로흐 벡터 (게이트를 지나는 동안 부드럽게 바뀐다)
-function blochNow(q) {
-  const i = Math.min(Math.floor(time), GATES.length);
-  const f = THREE.MathUtils.smoothstep(time - i, 0, 1);
-  const a = frames[i][q], b = frames[Math.min(i + 1, GATES.length)][q];
-  return a.map((v, k) => THREE.MathUtils.lerp(v, b[k], f));
+// 데스크톱의 QE 시스템 창과 작업 표시줄이 읽는 요약
+export function snapshot() {
+  return {
+    system: result.system,
+    blocks: program.blocks.map((b) => {
+      const st = result.state.get(b.id) ?? { status: 'idle' };
+      return { name: b.name, type: BLOCK_TYPES[b.type].label, status: st.status, value: st.value, msg: st.msg };
+    }),
+  };
 }
 
-// --- 카메라: 마우스로 도는 궤도 -------------------------------------------------------
-const goal = { target: new THREE.Vector3(), sph: new THREE.Spherical() };
-const cur = { target: new THREE.Vector3(), sph: new THREE.Spherical() };
-let overviewView;
-
-function aimAt(target, offset) {
-  goal.target.copy(target);
-  goal.sph.setFromVector3(offset);
-}
-export const overview = () => aimAt(overviewView.target, overviewView.offset);
-const focusOn = (pos) => aimAt(pos, new THREE.Vector3(-0.4, 0.45, 1).normalize().multiplyScalar(14));
-
-// --- 선택과 정보 패널 --------------------------------------------------------------
-let selected = null, hovered = null;   // { type: 'gate' | 'qubit' | 'layer', index }
-let liveEl = null;
-
+// --- 팔레트 (블록 꺼내기) ----------------------------------------------------------
 function h(tag, props = {}, ...children) {
   const el = Object.assign(document.createElement(tag), props);
   el.append(...children);
   return el;
 }
+const hex = (c) => `#${c.toString(16).padStart(6, '0')}`;
+const termDots = (ports) => (ports.length ? ports.map((p) => {
+  const dot = h('span', { className: 'sig', textContent: p.label + (p.optional ? '?' : '') });
+  dot.style.setProperty('--sig', hex(SIGNALS[p.type].color));
+  return dot;
+}) : [h('span', { className: 'sig none', textContent: '—' })]);
 
-const KIND = { H: 'H · 중첩', RX: 'Rx · 회전', RY: 'Ry · 회전', CX: 'CX · 얽힘', M: 'M · 측정' };
-const layerOf = (id) => LAYERS.find((l) => l.id === id);
-
-function select(sel) {
-  selected = sel;
-  liveEl = null;
-  if (!sel) { infoEl.hidden = true; return; }
-  infoEl.hidden = !isActive(view);
-  if (sel.type === 'gate') {
-    const g = GATES[sel.index];
-    const go = h('button', { textContent: '이 단계로 이동' });
-    go.addEventListener('click', () => { time = sel.index; playing = false; });
-    infoEl.replaceChildren(
-      h('div', { className: 'kind', textContent: `게이트 ${KIND[g.kind]} · ${layerOf(g.layer).name}` }),
-      h('strong', { textContent: involved(g).map((id) => defs[id].name).join(g.kind === 'CX' ? ' → ' : ', ') }),
-      h('p', { textContent: g.note }),
-      ...(g.angle !== undefined ? [h('div', { className: 'dim', textContent: `회전 각 ${g.angle.toFixed(2)} rad` })] : []),
-      h('div', { className: 'actions' }, go),
-    );
-  } else if (sel.type === 'qubit') {
-    const id = QUBITS[sel.index];
-    liveEl = h('div', { className: 'live' });
-    const folders = hooks.folders(id).map((f) => {
-      const b = h('button', { textContent: `📁 ${f.name}`, title: `${f.path} — 데스크톱에서 열기` });
-      b.addEventListener('click', () => hooks.openFolder(f.path));
-      return b;
-    });
-    infoEl.replaceChildren(
-      h('div', { className: 'kind', textContent: `큐비트 · ${ROLES[id]}` }),
-      h('strong', { textContent: defs[id].name }),
-      h('p', { textContent: defs[id].desc }),
-      liveEl,
-      ...(folders.length ? [h('div', { className: 'dim', textContent: '접목된 폴더 (데스크톱에서 열기)' }), h('div', { className: 'actions' }, ...folders)] : []),
-    );
-  }
-}
-
-function selectLayer(span) {
-  selected = { type: 'layer', index: LAYERS.indexOf(span.layer) };
-  liveEl = null;
-  infoEl.hidden = !isActive(view);
-  infoEl.replaceChildren(
-    h('div', { className: 'kind', textContent: '층' }),
-    h('strong', { textContent: span.layer.name }),
-    h('p', { textContent: span.layer.desc }),
+function buildPalette() {
+  const groups = [...new Set(Object.values(BLOCK_TYPES).map((d) => d.group))];
+  const sections = groups.map((g) => h('div', { className: 'palette-group' },
+    h('div', { className: 'palette-group-name', textContent: g }),
+    ...Object.entries(BLOCK_TYPES).filter(([, d]) => d.group === g).map(([type, def]) => {
+      const item = h('div', { className: 'palette-item', draggable: true, title: `${def.help}\n\n클릭하거나 판 위로 끌어다 놓기` },
+        h('span', { className: 'chip' }),
+        h('div', { className: 'palette-body' },
+          h('strong', { textContent: def.label }),
+          h('div', { className: 'terms' }, ...termDots(def.ins), h('span', { className: 'arrow', textContent: '→' }), ...termDots(def.outs))));
+      item.querySelector('.chip').style.background = hex(def.color);
+      item.addEventListener('click', () => addBlock(type, freeSpot()));
+      item.addEventListener('dragstart', (e) => e.dataTransfer.setData('text/plain', `block:${type}`));
+      return item;
+    })));
+  const clear = h('button', { className: 'clear', textContent: '🗑 모두 비우기 (No Base)' });
+  clear.addEventListener('click', () => {
+    if (program.blocks.length && confirm('조립한 블록을 모두 지우고 No Base 로 돌아갈까요?')) {
+      program.blocks = [];
+      program.wires = [];
+      select(null);
+      refresh();
+    }
+  });
+  paletteEl.replaceChildren(
+    h('div', { className: 'palette-title', textContent: '양자 뉴런 블록' }),
+    h('div', { className: 'palette-sub', textContent: '기능 모듈을 꺼내 놓고 같은 색 단자끼리 이으세요' }),
+    ...sections,
+    h('div', { className: 'palette-status' }),
+    clear,
   );
 }
 
-function updateLive() {
-  if (!liveEl || selected?.type !== 'qubit') return;
-  const [x, y, z] = blochNow(selected.index);
-  const r = Math.hypot(x, y, z);
-  liveEl.textContent = `블로흐 (x ${x.toFixed(2)}, y ${y.toFixed(2)}, z ${z.toFixed(2)})\n`
-    + `1 이 나올 확률 ${((1 - z) / 2 * 100).toFixed(0)}%\n`
-    + (r < 0.95 ? `얽힘 ${((1 - r) * 100).toFixed(0)}% — 다른 큐비트와 얽혀 있다` : '순수 상태 — 아직 얽히지 않았다');
+function renderPaletteStatus() {
+  const el = paletteEl.querySelector('.palette-status');
+  if (!el) return;
+  el.textContent = `블록 ${program.blocks.length} · 연결 ${program.wires.length} · 시스템 `
+    + (result.system === null ? '— (Topology 블록에 아직 닿지 않음)' : `${Math.round(result.system * 100)}%`);
 }
 
-// --- 마우스 · 키보드 ---------------------------------------------------------------
-// 왼쪽 드래그 = 회전, 오른쪽 드래그 = 이동, 스크롤/가운데 드래그 = 다가가기·물러나기,
-// 클릭 = 게이트/큐비트 선택, 더블클릭 = 다가가기(빈 곳이면 전체 보기),
-// Space = 순전파 재생/멈춤, ← → = 한 단계씩, 층 이름 클릭 = 그 층으로.
+// 카메라가 보는 곳 근처의 빈자리
+function freeSpot() {
+  const base = cur.target.clone();
+  for (let r = 0; r < 12; r++) {
+    for (let k = 0; k < 6; k++) {
+      const p = new THREE.Vector3(base.x + (k % 3) * 4.4 - 4.4, 0, base.z + Math.floor(k / 3) * 3 + r * 3 - 2);
+      if (!program.blocks.some((b) => Math.abs(b.x - p.x) < 3.6 && Math.abs(b.z - p.z) < 2.6)) return p;
+    }
+  }
+  return base;
+}
+
+function addBlock(type, at) {
+  const b = createBlock(type, program, Math.round(at.x * 2) / 2, Math.round(at.z * 2) / 2, { path: hooks.dataPlaces()[0]?.path });
+  program.blocks.push(b);
+  select({ kind: 'block', id: b.id });
+  refresh();
+}
+
+canvas.addEventListener('dragover', (e) => { if (isActive(view)) e.preventDefault(); });
+canvas.addEventListener('drop', (e) => {
+  const data = e.dataTransfer.getData('text/plain');
+  if (!isActive(view) || !data.startsWith('block:')) return;
+  e.preventDefault();
+  const p = boardPoint(e);
+  if (p) addBlock(data.slice(6), p);
+});
+
+// --- 선택과 정보 패널 -------------------------------------------------------------
+let selected = null;   // { kind: 'block' | 'wire', id }
+
+function select(sel) {
+  selected = sel;
+  renderInfo();
+}
+
+function renderInfo() {
+  if (!selected || !isActive(view)) { infoEl.hidden = true; return; }
+  const button = (text, fn, title = '') => {
+    const b = h('button', { textContent: text, title });
+    b.addEventListener('click', fn);
+    return b;
+  };
+
+  if (selected.kind === 'wire') {
+    const w = program.wires.find((x) => x.id === selected.id);
+    if (!w) { infoEl.hidden = true; return; }
+    const name = (id) => program.blocks.find((b) => b.id === id).name;
+    infoEl.hidden = false;
+    infoEl.replaceChildren(
+      h('div', { className: 'kind', textContent: `연결 · ${SIGNALS[wireViews.get(w.id)?.type ?? 'data'].label} 신호` }),
+      h('strong', { textContent: `${name(w.from.block)} → ${name(w.to.block)}` }),
+      h('p', { className: 'dim', textContent: result.live.has(w.id) ? '신호가 흐르는 중' : '앞쪽 블록이 대기 중이라 아직 신호가 없다' }),
+      h('div', { className: 'actions' }, button('연결 끊기', () => { program.wires = program.wires.filter((x) => x !== w); select(null); refresh(); })),
+    );
+    return;
+  }
+
+  const b = program.blocks.find((x) => x.id === selected.id);
+  if (!b) { infoEl.hidden = true; return; }
+  const def = BLOCK_TYPES[b.type];
+  const st = result.state.get(b.id) ?? { status: 'idle' };
+  infoEl.hidden = false;
+
+  const name = h('input', { value: b.name, spellcheck: false });
+  name.addEventListener('change', () => { b.name = name.value.trim() || def.label; refresh(); });
+
+  // 데이터 블록: 실제 폴더 고르기
+  const params = [];
+  if (b.type === 'data') {
+    const sel = h('select', {}, ...hooks.dataPlaces().map((p) => h('option', { value: p.path, textContent: `${p.name} — ${p.path}`, selected: p.path === b.path })));
+    sel.addEventListener('change', () => { b.path = sel.value; hooks.save(program); hooks.needData(b.path); });
+    params.push(h('label', { className: 'param' }, h('span', { className: 'dim', textContent: '데이터 폴더' }), sel));
+  }
+
+  const lines = [];
+  if (st.status === 'ok') lines.push(`신호 세기 ${(st.value * 100).toFixed(0)}%`);
+  for (const i of st.inputs ?? []) lines.push(`  ← ${i.label} ${(i.value * 100).toFixed(0)}%`);
+  if (st.bloch) {
+    const r = Math.hypot(...st.bloch);
+    lines.push(`양자 뉴런 블로흐 (${st.bloch.map((v) => v.toFixed(2)).join(', ')})${r < 0.95 ? `  얽힘 ${((1 - r) * 100).toFixed(0)}%` : ''}`);
+  }
+  if (st.msg) lines.push(st.msg);
+
+  // Topology 환경으로 가는 통로
+  const links = [];
+  if (b.type === 'data' && b.path) links.push(button('📁 폴더 층 열기', () => hooks.openFolder(b.path), '데스크톱에서 이 폴더 층을 연다'));
+  if (['wifi', 'vpn', 'network', 'bigdata'].includes(b.type)) links.push(button('📶 네트워크 창', () => hooks.openNetwork()));
+  if (b.type === 'instrument') links.push(button('⌨ 터미널', () => hooks.openTerminal()));
+  if (b.type === 'topology') links.push(button('▣ 데스크톱에서 시스템 보기', () => hooks.openSystem()));
+  for (const f of hooks.folders(def.concept)) links.push(button(`📁 ${f.name}`, () => hooks.openFolder(f.path), f.path));
+  const desc = NODES.find((n) => n.id === def.concept)?.desc;
+
+  infoEl.replaceChildren(
+    h('div', { className: 'kind', textContent: `${def.group} · ${def.label} 블록` }),
+    name,
+    h('div', { className: 'terms' }, h('span', { className: 'dim', textContent: '단자 ' }), ...termDots(def.ins), h('span', { className: 'arrow', textContent: '→' }), ...termDots(def.outs)),
+    h('p', { textContent: def.help }),
+    ...(desc ? [h('p', { className: 'dim', textContent: desc })] : []),
+    ...params,
+    h('div', { className: `live status-${st.status}`, textContent: lines.join('\n') }),
+    ...(links.length ? [h('div', { className: 'dim', textContent: 'Topology 환경' }), h('div', { className: 'actions' }, ...links)] : []),
+    h('div', { className: 'actions' }, button('블록 지우기', () => { removeBlock(program, b.id); select(null); refresh(); })),
+  );
+}
+
+// --- 카메라 -------------------------------------------------------------------
+const HOME = { target: new THREE.Vector3(0, 0, 0), offset: new THREE.Vector3(0, 1.15, 1).normalize().multiplyScalar(26) };
+const goal = { target: HOME.target.clone(), sph: new THREE.Spherical().setFromVector3(HOME.offset) };
+const cur = { target: HOME.target.clone(), sph: goal.sph.clone() };
+
+export function overview() {
+  goal.sph.setFromVector3(HOME.offset);
+  if (!program.blocks.length) { goal.target.copy(HOME.target); return; }
+  const box = new THREE.Box3();
+  program.blocks.forEach((b) => box.expandByPoint(new THREE.Vector3(b.x, 0, b.z)));
+  goal.target.copy(box.getCenter(new THREE.Vector3()));
+  goal.sph.radius = Math.max(20, box.getSize(new THREE.Vector3()).length() * 1.2);
+  // 왼쪽 팔레트에 가리지 않게 중심을 조금 왼쪽으로 잡아 블록이 화면 오른쪽에 오게 한다
+  goal.target.x -= goal.sph.radius * 0.17;
+}
+
+// --- 마우스 ---------------------------------------------------------------------
+// 블록 드래그 = 옮기기, 단자 드래그 = 잇기, 빈 곳 왼쪽 드래그 = 회전, 오른쪽 드래그 = 이동,
+// 스크롤 = 다가가기/물러나기, 클릭 = 선택, Delete = 선택한 블록·연결 지우기.
 const raycaster = new THREE.Raycaster();
-function pick(e) {
+function ray(e) {
   raycaster.setFromCamera(new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1), camera);
-  const hit = raycaster.intersectObjects(pickables, false)[0];
-  return hit ? { ...hit.object.userData, point: hit.object.position } : null;
+  return raycaster;
+}
+function boardPoint(e) {
+  return ray(e).ray.intersectPlane(BOARD, new THREE.Vector3());
+}
+function pickAt(e, list) {
+  return ray(e).intersectObjects(list, false)[0]?.object.userData ?? null;
 }
 
 let drag = null;
+let hoverTerm = null;
+
+function compatible(from, t) {
+  if (!t || t.side === from.side || t.id === from.id) return false;
+  const [o, i] = from.side === 'outs' ? [from, t] : [t, from];
+  return canConnect(program, { block: o.id, port: o.port }, { block: i.id, port: i.port });
+}
+
+function highlightTerms(from) {
+  for (const m of pickTerms) {
+    const ok = from && compatible(from, m.userData);
+    m.scale.setScalar(ok ? 1.7 : 1);
+    m.material.emissiveIntensity = ok ? 1.5 : from ? 0.1 : 0.5;
+  }
+}
+
 canvas.addEventListener('contextmenu', (e) => { if (isActive(view)) e.preventDefault(); });
 canvas.addEventListener('pointerdown', (e) => {
   if (!isActive(view)) return;
-  drag = { button: e.button, moved: 0 };
   canvas.setPointerCapture(e.pointerId);
+  if (e.button === 2) { drag = { mode: 'pan', moved: 0 }; return; }
+  if (e.button === 1) { drag = { mode: 'zoom', moved: 0 }; return; }
+  const term = pickAt(e, pickTerms);
+  if (term) {
+    drag = { mode: 'wire', from: term, moved: 0 };
+    highlightTerms(term);
+    return;
+  }
+  const body = pickAt(e, pickBodies);
+  if (body) {
+    const b = program.blocks.find((x) => x.id === body.id);
+    const p = boardPoint(e) ?? new THREE.Vector3(b.x, 0, b.z);
+    drag = { mode: 'block', block: b, dx: b.x - p.x, dz: b.z - p.z, moved: 0 };
+    return;
+  }
+  drag = { mode: 'orbit', moved: 0 };
 });
+
 canvas.addEventListener('pointermove', (e) => {
   if (!isActive(view)) return;
   if (!drag) {
-    hovered = pick(e);
-    canvas.style.cursor = hovered ? 'pointer' : 'grab';
+    const t = pickAt(e, pickTerms);
+    const b = !t && pickAt(e, pickBodies);
+    canvas.style.cursor = t ? 'crosshair' : b ? 'move' : 'grab';
     return;
   }
   drag.moved += Math.abs(e.movementX) + Math.abs(e.movementY);
-  if (drag.button === 0) {
+  if (drag.mode === 'orbit') {
     goal.sph.theta -= e.movementX * CONTROLS.orbitSensitivity;
-    goal.sph.phi = THREE.MathUtils.clamp(goal.sph.phi - e.movementY * CONTROLS.orbitSensitivity, 0.1, Math.PI - 0.1);
-  } else if (drag.button === 2) {
+    goal.sph.phi = THREE.MathUtils.clamp(goal.sph.phi - e.movementY * CONTROLS.orbitSensitivity, 0.15, Math.PI / 2 - 0.05);
+  } else if (drag.mode === 'pan') {
     const k = cur.sph.radius * 0.0016;
     const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
-    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
-    goal.target.addScaledVector(right, -e.movementX * k).addScaledVector(up, e.movementY * k);
-  } else if (drag.button === 1) {
-    goal.sph.radius = THREE.MathUtils.clamp(goal.sph.radius * Math.exp(e.movementY * 0.01), 4, 140);
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion).setY(0).normalize();
+    goal.target.addScaledVector(right, -e.movementX * k).addScaledVector(fwd, e.movementY * k);
+  } else if (drag.mode === 'zoom') {
+    goal.sph.radius = THREE.MathUtils.clamp(goal.sph.radius * Math.exp(e.movementY * 0.01), 5, 120);
+  } else if (drag.mode === 'block') {
+    const p = boardPoint(e);
+    if (!p) return;
+    drag.block.x = Math.round((p.x + drag.dx) * 2) / 2;
+    drag.block.z = Math.round((p.z + drag.dz) * 2) / 2;
+    views.get(drag.block.id).group.position.set(drag.block.x, 0, drag.block.z);
+    rebuildWires();
+  } else if (drag.mode === 'wire') {
+    const t = pickAt(e, pickTerms);
+    hoverTerm = compatible(drag.from, t) ? t : null;
+    const a = termWorld(drag.from.id, drag.from.side, drag.from.port);
+    const b = hoverTerm ? termWorld(hoverTerm.id, hoverTerm.side, hoverTerm.port) : (boardPoint(e) ?? a.clone()).setY(BH / 2);
+    const [s, d] = drag.from.side === 'outs' ? [a, b] : [b, a];
+    ghost.geometry.dispose();
+    ghost.geometry = new THREE.TubeGeometry(wireCurve(s, d), 30, 0.05, 6, false);
+    ghost.material.color.set(SIGNALS[drag.from.type].color);
+    ghost.visible = true;
   }
 });
+
 canvas.addEventListener('pointerup', (e) => {
   if (!isActive(view) || !drag) return;
-  if (drag.button === 0 && drag.moved < 4) {
-    const p = pick(e);
-    select(p ? { type: p.type, index: p.index } : null);
-  }
+  const d = drag;
   drag = null;
+  if (d.mode === 'wire') {
+    ghost.visible = false;
+    highlightTerms(null);
+    if (hoverTerm) {
+      const [o, i] = d.from.side === 'outs' ? [d.from, hoverTerm] : [hoverTerm, d.from];
+      connect(program, { block: o.id, port: o.port }, { block: i.id, port: i.port });
+      refresh();
+    } else if (d.moved < 4) {
+      select({ kind: 'block', id: d.from.id });
+    }
+    hoverTerm = null;
+  } else if (d.mode === 'block') {
+    if (d.moved < 4) select({ kind: 'block', id: d.block.id });
+    else refresh();
+  } else if (d.mode === 'orbit' && d.moved < 4) {
+    const w = pickAt(e, pickWires);
+    select(w ? { kind: 'wire', id: w.id } : null);
+  }
 });
+
 canvas.addEventListener('dblclick', (e) => {
   if (!isActive(view)) return;
-  const p = pick(e);
-  if (p) focusOn(p.point); else overview();
+  const body = pickAt(e, pickBodies);
+  if (body) {
+    const b = program.blocks.find((x) => x.id === body.id);
+    goal.target.set(b.x, 0, b.z);
+    goal.sph.radius = 10;
+  } else overview();
 });
+
 addEventListener('wheel', (e) => {
   if (!isActive(view) || isUi(e.target)) return;
   e.preventDefault();
   const delta = THREE.MathUtils.clamp(e.deltaY || e.deltaX, -200, 200);
-  goal.sph.radius = THREE.MathUtils.clamp(goal.sph.radius * Math.exp(delta * 0.0012 * (e.shiftKey ? CONTROLS.fineFactor : 1)), 4, 140);
+  goal.sph.radius = THREE.MathUtils.clamp(goal.sph.radius * Math.exp(delta * 0.0012 * (e.shiftKey ? CONTROLS.fineFactor : 1)), 5, 120);
 }, { passive: false });
+
 addEventListener('keydown', (e) => {
   if (!isActive(view) || isTyping(e.target)) return;
-  if (e.code === 'Space') { e.preventDefault(); playing = !playing; }
-  if (e.code === 'ArrowRight') { playing = false; time = Math.min(Math.floor(time) + 1, GATES.length); }
-  if (e.code === 'ArrowLeft') { playing = false; time = Math.max(Math.ceil(time) - 1, 0); }
+  if ((e.code === 'Delete' || e.code === 'Backspace') && selected) {
+    if (selected.kind === 'block') removeBlock(program, selected.id);
+    else program.wires = program.wires.filter((w) => w.id !== selected.id);
+    select(null);
+    refresh();
+  }
   if (e.code === 'Home') overview();
   if (e.code === 'Escape') select(null);
 });
 
 // --- 프레임 --------------------------------------------------------------------
 const wrap = (a) => ((a + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
-const UP = new THREE.Vector3(0, 1, 0);
+const tmp = new THREE.Vector3();
 
-function update(dt) {
+function update(dt, t) {
   const k = 1 - Math.exp(-dt * 6);
   cur.target.lerp(goal.target, k);
   cur.sph.radius += (goal.sph.radius - cur.sph.radius) * k;
@@ -418,75 +578,43 @@ function update(dt) {
   camera.position.setFromSpherical(cur.sph).add(cur.target);
   camera.lookAt(cur.target);
 
-  // 순전파: 끝까지 가면 잠시 멈췄다가 |0…0⟩ 부터 다시
-  const now = performance.now();
-  if (playing && now > holdUntil) {
-    if (time >= GATES.length) time = 0;
-    else {
-      time = Math.min(time + dt * SPEED, GATES.length);
-      if (time >= GATES.length) holdUntil = now + 3000;
+  const arr = pulseGeo.attributes.position.array;
+  let n = 0;
+  for (const [id, v] of wireViews) {
+    if (!result.live.has(id)) continue;
+    for (let p = 0; p < PULSES && n < MAX_PULSES; p++, n++) {
+      v.curve.getPointAt((t * 0.45 + p / PULSES) % 1, tmp).toArray(arr, n * 3);
     }
   }
-  cursor.position.x = cursorX();
+  pulseGeo.setDrawRange(0, n);
+  pulseGeo.attributes.position.needsUpdate = true;
 
-  // 블로흐 화살표: 길이 = 순수도(짧을수록 많이 얽힘). 블로흐 z → 위, x → 앞(+x), y → 옆(+z)
-  bloch.forEach((b, q) => {
-    const [x, y, z] = blochNow(q);
-    const v = new THREE.Vector3(x, z, y);
-    const len = v.length() * 0.95;
-    b.arrow.visible = len > 0.08;
-    if (b.arrow.visible) {
-      b.arrow.quaternion.setFromUnitVectors(UP, v.normalize());
-      b.shaft.scale.y = Math.max(len - 0.3, 0.01);
-      b.head.position.y = Math.max(len - 0.15, 0.15);
-    }
-  });
-
-  // 지금 지나는 게이트와 고른/가리킨 게이트를 밝게
-  const active = gateIndex();
-  gateParts.forEach((mats, i) => {
-    const on = i === active && time < GATES.length;
-    const pickedHere = (selected?.type === 'gate' && selected.index === i) || (hovered?.type === 'gate' && hovered.index === i);
-    const goalI = on ? 1.4 : pickedHere ? 0.9 : i < time ? 0.35 : 0.15;
-    for (const m of mats) m.emissiveIntensity += (goalI - m.emissiveIntensity) * k;
-  });
-
-  // 측정값: 측정 열을 지난 뒤에 확률을 보여 준다
-  const measured = time >= GATES.length - 1;
-  for (const [id, el] of readouts) {
-    const p1 = (1 - frames[GATES.length][qIndex[id]][2]) / 2;
-    el.classList.toggle('pending', !measured);
-    el.querySelector('i').style.width = measured ? `${(p1 * 100).toFixed(0)}%` : '0%';
-    el.querySelector('.value').textContent = measured ? `P(1) ${(p1 * 100).toFixed(0)}%` : '측정 전';
+  for (const [id, v] of views) v.el.classList.toggle('selected', selected?.kind === 'block' && selected.id === id);
+  for (const [id, v] of wireViews) {
+    v.mesh.material.emissiveIntensity = selected?.kind === 'wire' && selected.id === id ? 1.4 : result.live.has(id) ? 0.5 : 0.08;
   }
-  updateLive();
 }
 
 const view = {
   scene, camera,
-  layers: [labels.domElement, hintEl],
+  layers: [labels.domElement, hintEl, paletteEl],
   update,
   render: () => labels.render(scene, camera),
   resize: () => labels.setSize(innerWidth, innerHeight),
-  status: () => `${layerOf(GATES[gateIndex()].layer).name} · ${Math.min(Math.floor(time) + 1, GATES.length)}/${GATES.length}${playing ? '' : ' ⏸'}`,
+  status: () => (!program.blocks.length ? 'No Base'
+    : `블록 ${program.blocks.length} · 시스템 ${result.system === null ? '—' : `${Math.round(result.system * 100)}%`}`),
 };
 registerView('diagram', view);
-onViewChange((name) => { infoEl.hidden = name !== 'diagram' || !selected; });
+onViewChange((name) => {
+  infoEl.hidden = name !== 'diagram' || !selected;
+  nobaseEl.hidden = name !== 'diagram' || program.blocks.length > 0;
+});
 
-export function build() {
-  simulate();
-  layout();
-  buildWires();
-  buildGates();
-  buildLayers();
-  // 블로흐 구부터 측정값까지 전체 길이가 가로 시야에 들어오는 거리
-  const len = xEnd + 6 - (xStart - 6);
-  const hfov = 2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * camera.aspect);
-  const dist = (len / 2) / Math.tan(hfov / 2) + RING;
-  overviewView = {
-    target: new THREE.Vector3((xStart - 6 + xEnd + 6) / 2, 0, 0),
-    offset: new THREE.Vector3(-0.12, 0.38, 1).normalize().multiplyScalar(dist * 1.15),
-  };
+export function build(saved, initialEnv) {
+  program = saved;
+  env = initialEnv;
+  buildPalette();
+  refresh(false);
   overview();
   cur.target.copy(goal.target);
   cur.sph.copy(goal.sph);

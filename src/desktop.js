@@ -3,6 +3,7 @@
 //   가운데(z=0)   : 바탕화면
 //   뒤            : 폴더 층. 폴더를 누르면 그 내용이 바로 뒤에 새 층으로 생긴다.
 // 스크롤을 멈추면 가장 가까운 층에 맞춰져 그 층이 픽셀 그대로(평소 2D 화면처럼) 보인다.
+// 한 층의 내용이 한 화면을 넘으면 페이지가 바둑판처럼 상하좌우로 펼쳐지고, 마우스로 끌어 옮겨 다닌다.
 import * as THREE from 'three';
 import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
 import { api } from './bridge.js';
@@ -13,6 +14,7 @@ const GAP = 9;        // 층 사이 거리
 const TASKBAR = 46;
 const ICON = 100;     // 아이콘 칸 크기(px)
 const HEAD = 44;      // 폴더 층 머리줄 높이(px)
+const MAX_PAGES = 16; // 한 층에 펼치는 페이지 수 상한
 const BG = 0x05192b;
 
 export const scene = new THREE.Scene();
@@ -45,9 +47,16 @@ const taskList = document.getElementById('task-list');
 // 이 거리에서 보면 층 위의 CSS 1px 이 화면 1px 이 된다.
 const pixelDist = () => (SCALE * innerHeight) / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
 let camZ = pixelDist(), goalZ = camZ, lastWheel = 0, snapPending = false;
+let camX = 0, camY = 0, goalX = 0, goalY = 0;
 
-function flyToZ(z) {
+// 페이지 사이 간격(월드 단위). 한 페이지 = 화면 하나 크기.
+const pageW = () => innerWidth * SCALE + 1.6;
+const pageH = () => (innerHeight - TASKBAR) * SCALE + 1.6;
+
+function flyToZ(z, page = [0, 0]) {
   goalZ = z + pixelDist();
+  goalX = page[0] * pageW();
+  goalY = -page[1] * pageH();
   snapPending = false;
 }
 
@@ -75,76 +84,71 @@ function iconEl({ name, glyph, selected }) {
 }
 
 function createLayer(index, path, name) {
-  const el = document.createElement('div');
-  el.className = `panel3d ${index === 0 ? 'desktop-wall' : 'folder-layer'}`;
-  el.innerHTML = `
-    <div class="layer-head">
-      <span class="layer-name"></span><span class="layer-count"></span>
-      <span class="pager"><button data-p="-1">◀</button><span class="page"></span><button data-p="1">▶</button></span>
-    </div>
-    <div class="layer-icons"></div>`;
-  el.querySelector('.layer-name').textContent = name;
-  const obj = new CSS3DObject(el);
-  obj.scale.setScalar(SCALE);
-  const layer = { kind: 'folder', index, path, name, z: -index * GAP, el, obj, selected: null, page: 0, pages: 1 };
-  el.querySelector('.pager').addEventListener('click', (e) => {
-    const d = Number(e.target.dataset.p);
-    if (!d) return;
-    layer.page = THREE.MathUtils.clamp(layer.page + d, 0, layer.pages - 1);
-    renderLayer(layer);
-  });
-  sizeLayer(layer);
-  scene.add(obj);
-  return layer;
+  return { kind: 'folder', index, path, name, z: -index * GAP, selected: null, pages: [], cols: 1, page: [0, 0] };
 }
 
-function sizeLayer(layer) {
+function pagePanel(layer, i, count, total) {
+  const el = document.createElement('div');
+  el.className = `panel3d ${layer.index === 0 ? 'desktop-wall' : 'folder-layer'}`;
+  el.innerHTML = `
+    <div class="layer-head">
+      <span class="layer-name"></span><span class="layer-count"></span><span class="page-no"></span>
+    </div>
+    <div class="layer-icons"></div>`;
+  el.querySelector('.layer-name').textContent = layer.name;
+  el.querySelector('.layer-count').textContent = total;
+  el.querySelector('.page-no').textContent = count > 1 ? `페이지 ${i + 1} / ${count}  ·  드래그로 넘기기` : '';
   const { w, h } = panelSize();
-  layer.el.style.width = `${w}px`;
-  layer.el.style.height = `${h}px`;
-  layer.obj.position.set(0, (TASKBAR / 2) * SCALE, layer.z);
+  el.style.width = `${w}px`;
+  el.style.height = `${h}px`;
+  const obj = new CSS3DObject(el);
+  obj.scale.setScalar(SCALE);
+  const col = i % layer.cols, row = Math.floor(i / layer.cols);
+  obj.position.set(col * pageW(), (TASKBAR / 2) * SCALE - row * pageH(), layer.z);
+  scene.add(obj);
+  return { el, obj, col, row };
 }
 
 async function renderLayer(layer) {
   const per = perPage();
   const sp = layer.index === 0 ? specials : [];
-  const offset = layer.page === 0 ? 0 : layer.page * per - sp.length;
-  const limit = layer.page === 0 ? per - sp.length : per;
-  const r = await api.listDir(layer.path, { offset, limit });
-  layer.pages = Math.max(1, Math.ceil((r.total + sp.length) / per));
-
-  layer.el.querySelector('.layer-count').textContent = r.error ? r.error : `${r.total}개`;
-  layer.el.querySelector('.page').textContent = `${layer.page + 1} / ${layer.pages}`;
-  layer.el.querySelector('.pager').hidden = layer.pages < 2;
-
+  const r = await api.listDir(layer.path, { limit: per * MAX_PAGES - sp.length });
   const items = [
-    ...(layer.page === 0 ? sp.map((s) => ({ ...s, dir: !!s.path })) : []),
+    ...sp.map((s) => ({ ...s, dir: !!s.path })),
     ...r.entries.map((e) => ({ name: e.name, path: e.path, dir: e.dir, glyph: e.dir ? '📁' : '📄' })),
   ];
-  layer.el.querySelector('.layer-icons').replaceChildren(...items.map((item) => {
-    const el = iconEl({ ...item, selected: item.path && item.path === layer.selected });
-    // 폴더: 클릭 = 뒤에 다음 층 만들기, 더블클릭 = 그 층으로 들어가기. 파일: 더블클릭 = 기본 앱으로 열기.
-    el.addEventListener('click', () => {
-      if (item.dir && item.path !== layer.selected) openBehind(layer, item.path, item.name);
-    });
-    el.addEventListener('dblclick', async () => {
-      if (item.open) return item.open();
-      if (!item.dir) return api.open(item.path);
-      const next = item.path === layer.selected ? stack[layer.index + 1] : await openBehind(layer, item.path, item.name);
-      if (next) flyToZ(next.z);
-    });
-    return el;
-  }));
+  const count = Math.max(1, Math.ceil(items.length / per));
+  layer.cols = Math.ceil(Math.sqrt(count));
+  layer.pages.forEach((p) => scene.remove(p.obj));
+  const total = r.error ? r.error : `${r.total}개${r.total > r.entries.length ? ` (앞 ${r.entries.length}개)` : ''}`;
+  layer.pages = Array.from({ length: count }, (_, i) => pagePanel(layer, i, count, total));
+
+  layer.pages.forEach((page, i) => {
+    page.el.querySelector('.layer-icons').replaceChildren(...items.slice(i * per, (i + 1) * per).map((item) => {
+      const el = iconEl({ ...item, selected: item.path && item.path === layer.selected });
+      // 폴더: 클릭 = 뒤에 다음 층 만들기, 더블클릭 = 그 층으로 들어가기. 파일: 더블클릭 = 기본 앱으로 열기.
+      el.addEventListener('click', () => {
+        if (item.dir && item.path !== layer.selected) openBehind(layer, item.path, item.name);
+      });
+      el.addEventListener('dblclick', async () => {
+        if (item.open) return item.open();
+        if (!item.dir) return api.open(item.path);
+        const next = item.path === layer.selected ? stack[layer.index + 1] : await openBehind(layer, item.path, item.name);
+        if (next) flyToZ(next.z);
+      });
+      return el;
+    }));
+  });
 }
 
 function truncate(length) {
-  while (stack.length > length) scene.remove(stack.pop().obj);
+  while (stack.length > length) stack.pop().pages.forEach((p) => scene.remove(p.obj));
 }
 
 // layer 에서 고른 폴더를 바로 뒤 층으로 연다. 그보다 깊던 층은 새로 고른 폴더 기준으로 다시 만든다.
 async function openBehind(layer, path, name) {
   layer.selected = path;
-  layer.el.querySelectorAll('.icon').forEach((el) => el.classList.toggle('selected', el.title === name));
+  layer.pages.forEach((p) => p.el.querySelectorAll('.icon').forEach((el) => el.classList.toggle('selected', el.title === name)));
   truncate(layer.index + 1);
   const next = createLayer(layer.index + 1, path, `📁 ${name}`);
   stack.push(next);
@@ -197,13 +201,32 @@ function focus(win) {
   if (win) { win.el.classList.add('focused'); win.tab.classList.add('active'); }
 }
 
+// 지금 카메라가 보는 페이지(층 안에서)
+function pageIndex(layer) {
+  if (layer.kind !== 'folder' || !layer.pages.length) return 0;
+  const col = THREE.MathUtils.clamp(Math.round(camX / pageW()), 0, layer.cols - 1);
+  const row = THREE.MathUtils.clamp(Math.round(-camY / pageH()), 0, Math.ceil(layer.pages.length / layer.cols) - 1);
+  return Math.min(row * layer.cols + col, layer.pages.length - 1);
+}
+
+function snapPage(layer, x = goalX, y = goalY) {
+  if (layer.kind !== 'folder' || !layer.pages.length) return [0, 0];
+  const rows = Math.ceil(layer.pages.length / layer.cols);
+  let col = THREE.MathUtils.clamp(Math.round(x / pageW()), 0, layer.cols - 1);
+  let row = THREE.MathUtils.clamp(Math.round(-y / pageH()), 0, rows - 1);
+  while (row * layer.cols + col >= layer.pages.length) col--;   // 마지막 줄의 빈칸
+  return [col, row];
+}
+
+let lastGaugeKey = '';
 function renderGauge() {
   shownLayer = nearestLayer(camZ - pixelDist());
   gaugeEl.replaceChildren(
     Object.assign(document.createElement('div'), { className: 'gauge-title', textContent: '깊이 ↕ 스크롤' }),
     ...layers().map((l) => {
       const b = document.createElement('button');
-      b.textContent = l.kind === 'window' ? `${l.icon} ${l.title}` : l.name;
+      const pages = l.kind === 'folder' && l.pages.length > 1 ? `  ${pageIndex(l) + 1}/${l.pages.length}` : '';
+      b.textContent = l.kind === 'window' ? `${l.icon} ${l.title}` : l.name + (l === shownLayer ? pages : '');
       b.className = `${l.kind}${l === shownLayer ? ' current' : ''}`;
       b.addEventListener('click', () => flyToZ(l.z));
       return b;
@@ -333,8 +356,47 @@ addEventListener('wheel', (e) => {
   snapPending = true;
 }, { passive: false });
 
+// 마우스로 끌어 상하좌우 페이지로: 빈 곳이나 페이지 바탕을 끌면 화면이 손을 따라오고, 놓으면 가까운 페이지에 맞춘다.
+let pan = null;
+function startPan(e) {
+  if (!isActive(view) || e.button !== 0) return;
+  if (e.target instanceof Element && e.target.closest('.icon, .win, button, input, select')) return;
+  pan = { x: e.clientX, y: e.clientY, gx: goalX, gy: goalY, moved: 0 };
+}
+addEventListener('pointerdown', (e) => {
+  if (e.target instanceof Element && (e.target === document.querySelector('#stage canvas') || e.target.closest('.panel3d'))) startPan(e);
+});
+addEventListener('pointermove', (e) => {
+  if (!pan) return;
+  const dx = e.clientX - pan.x, dy = e.clientY - pan.y;
+  pan.moved = Math.max(pan.moved, Math.abs(dx) + Math.abs(dy));
+  // 맞춰진 층에서는 화면 1px = 층 위 1px 이라 손가락처럼 그대로 따라온다
+  goalX = camX = pan.gx - dx * SCALE;
+  goalY = camY = pan.gy + dy * SCALE;
+});
+addEventListener('pointerup', () => {
+  if (!pan) return;
+  const layer = nearestLayer(camZ - pixelDist());
+  // 화면의 1/5 이상 끌었으면 그 방향의 다음 페이지로
+  const dx = (goalX - pan.gx) / pageW(), dy = (goalY - pan.gy) / pageH();
+  const bias = (v) => (Math.abs(v) > 0.2 ? Math.sign(v) * 0.5 : 0);
+  const [col, row] = snapPage(layer, pan.gx + (dx + bias(dx)) * pageW(), pan.gy + (dy + bias(dy)) * pageH());
+  goalX = col * pageW();
+  goalY = -row * pageH();
+  pan = null;
+});
+
 addEventListener('keydown', (e) => {
   if (!isActive(view) || isTyping(e.target)) return;
+  const layerNow = nearestLayer(camZ - pixelDist());
+  const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.code];
+  if (step && layerNow.kind === 'folder') {
+    const [c, r] = snapPage(layerNow);
+    const [col, row] = snapPage(layerNow, (c + step[0]) * pageW(), -(r + step[1]) * pageH());
+    goalX = col * pageW();
+    goalY = -row * pageH();
+    e.preventDefault();
+  }
   const list = layers();
   const i = list.indexOf(shownLayer);
   if ((e.code === 'PageDown') && i < list.length - 1) flyToZ(list[i + 1].z);
@@ -344,15 +406,23 @@ addEventListener('keydown', (e) => {
 // --- 프레임 --------------------------------------------------------------------
 function update(dt) {
   const d = pixelDist();
-  if (snapPending && performance.now() - lastWheel > 300) flyToZ(nearestLayer(goalZ - d).z);
+  if (snapPending && performance.now() - lastWheel > 300) {
+    const layer = nearestLayer(goalZ - d);
+    flyToZ(layer.z, snapPage(layer));
+  }
 
   const k = 1 - Math.exp(-dt * 7);
   camZ += (goalZ - camZ) * k;
-  camera.position.set(0, 0, camZ);
-  camera.lookAt(0, 0, camZ - 1);
+  if (!pan) {
+    camX += (goalX - camX) * k;
+    camY += (goalY - camY) * k;
+  }
+  camera.position.set(camX, camY, camZ);
+  camera.lookAt(camX, camY, camZ - 1);
 
   // 카메라를 지나친 층은 사라지고, 멀리 있는 층은 어두워진다.
-  for (const l of [...windows, ...stack]) {
+  const panels = [...windows, ...stack.flatMap((l) => l.pages.map((p) => ({ ...p, z: l.z })))];
+  for (const l of panels) {
     l.obj.position.z += (l.z - l.obj.position.z) * k;
     const dz = camZ - l.obj.position.z;
     const opacity = THREE.MathUtils.clamp((dz - 0.4 * d) / (0.5 * d), 0, 1);
@@ -361,7 +431,9 @@ function update(dt) {
     l.obj.visible = !l.minimized && opacity > 0.02;
   }
 
-  if (nearestLayer(camZ - d) !== shownLayer) renderGauge();
+  const now = nearestLayer(camZ - d);
+  const key = `${stack.indexOf(now)}:${windows.indexOf(now)}:${pageIndex(now)}`;
+  if (now !== shownLayer || key !== lastGaugeKey) { lastGaugeKey = key; renderGauge(); }
 }
 
 const view = {
@@ -371,11 +443,12 @@ const view = {
   render: () => css3d.render(scene, camera),
   resize: () => {
     css3d.setSize(innerWidth, innerHeight);
-    stack.forEach((l) => { sizeLayer(l); renderLayer(l); });
+    stack.forEach((l) => renderLayer(l));
   },
   status: () => {
     const list = layers();
-    return `층 ${list.indexOf(shownLayer) + 1}/${list.length} · ${shownLayer?.kind === 'window' ? shownLayer.title : shownLayer?.name ?? ''}`;
+    const pages = shownLayer?.kind === 'folder' && shownLayer.pages.length > 1 ? ` · 페이지 ${pageIndex(shownLayer) + 1}/${shownLayer.pages.length}` : '';
+    return `층 ${list.indexOf(shownLayer) + 1}/${list.length} · ${shownLayer?.kind === 'window' ? shownLayer.title : shownLayer?.name ?? ''}${pages}`;
   },
 };
 registerView('desktop', view);

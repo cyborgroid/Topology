@@ -114,7 +114,9 @@ async function netInfo() {
     .filter((w) => w.ssid);
   const addresses = Object.entries(os.networkInterfaces()).flatMap(([iface, list]) =>
     list.filter((a) => !a.internal).map((a) => ({ iface, family: a.family, address: a.address })));
-  return { active, wifi, addresses };
+  // tun/wg/ppp/tap 이나 이름에 vpn·proton 이 들어간 인터페이스가 있으면 VPN 이 켜진 것으로 본다.
+  const vpn = Object.keys(os.networkInterfaces()).some((n) => /^(tun|wg|ppp|tap)|vpn|proton/i.test(n));
+  return { active, wifi, addresses, vpn };
 }
 
 const APP_DIRS = [
@@ -154,4 +156,22 @@ function launch(id) {
   spawn('gtk-launch', [String(id)], { detached: true, stdio: 'ignore' }).unref();
 }
 
-module.exports = { places, listDir, open, exec: execCommand, sysInfo, netInfo, apps, launch };
+// 양자 뉴런 블록 프로그램: 사용자가 쌓은 블록을 컴퓨터에 저장해 다음에 이어서 쌓는다.
+const PROGRAM = path.join(HOME, '.config', 'qe-analog-topology', 'program.json');
+
+async function loadProgram() {
+  try {
+    return JSON.parse(await fs.readFile(PROGRAM, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+async function saveProgram(program) {
+  if (!program || !Array.isArray(program.blocks)) throw new Error('잘못된 프로그램');
+  await fs.mkdir(path.dirname(PROGRAM), { recursive: true });
+  await fs.writeFile(PROGRAM, JSON.stringify(program, null, 2));
+  return true;
+}
+
+module.exports = { places, listDir, open, exec: execCommand, sysInfo, netInfo, apps, launch, loadProgram, saveProgram };

@@ -25,19 +25,53 @@ input:focus { border-color: var(--accent); }
 
 /* --- 다이어그램: 블록 라벨 --- */
 .label { white-space: nowrap; pointer-events: none; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7); transition: opacity 0.25s; }
-.label-qubit { font-size: 13px; font-weight: 700; color: #fff; padding: 2px 8px; border-radius: 4px;
-  background: rgba(10, 18, 26, 0.75); border-left: 3px solid var(--q, var(--accent)); }
-.label-qubit::after { content: attr(data-role); margin-left: 6px; font-size: 10px; font-weight: 400; color: var(--dim); }
-.label-gate { font-size: 11px; font-weight: 700; color: #04121e; text-shadow: none; }
-.label-layer { pointer-events: auto; cursor: pointer; font-size: 13px; color: var(--accent); padding: 3px 10px;
-  border: 1px solid var(--line); border-radius: 12px; background: rgba(4, 34, 58, 0.75); }
-.label-layer:hover { background: rgba(127, 231, 255, 0.2); }
-.label-readout { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #fff; padding: 3px 8px;
-  border-radius: 4px; background: rgba(10, 18, 26, 0.8); }
-.label-readout .bar { width: 70px; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.15); overflow: hidden; }
-.label-readout .bar i { display: block; height: 100%; background: #fff1a8; transition: width 0.6s; }
-.label-readout.pending { opacity: 0.6; }
+/* --- 양자 뉴런 블록 조립판 --- */
+.label-block { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 2px 8px; border-radius: 6px;
+  background: rgba(6, 16, 26, 0.75); font-size: 12px; color: #fff; }
+.label-block .name { font-weight: 700; }
+.label-block .out { font-size: 11px; color: #fff1a8; font-family: ui-monospace, monospace; }
+.label-block[data-status="idle"] .out { color: var(--dim); }
+.label-block[data-status="error"] .out { color: #ff9b9b; }
+.label-block.selected { outline: 2px solid var(--accent); }
+
+.palette { left: 12px; top: 12px; bottom: 58px; width: 270px; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.palette-title { font-size: 15px; font-weight: 700; color: var(--accent); }
+.palette-sub { font-size: 11px; color: var(--dim); margin-bottom: 4px; }
+.palette-group-name { font-size: 11px; color: var(--dim); margin: 6px 0 3px; letter-spacing: 0.05em; }
+.palette-item { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 8px; cursor: grab;
+  border: 1px solid transparent; }
+.palette-item:hover { background: rgba(127, 231, 255, 0.1); border-color: var(--line); }
+.palette-item .chip { width: 14px; height: 28px; border-radius: 4px; flex: none; }
+.palette-item strong { font-size: 13px; }
+.terms { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin-top: 2px; font-size: 10px; }
+.terms .arrow { color: var(--dim); }
+.sig { padding: 0 5px; border-radius: 8px; color: #04121e; background: var(--sig, #888); font-weight: 600; }
+.sig.none { background: none; color: var(--dim); }
+.palette-status { margin-top: auto; padding-top: 8px; font-size: 12px; color: #fff1a8; border-top: 1px solid var(--line); }
+.palette .clear { padding: 6px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; }
+.palette .clear:hover { background: rgba(255, 120, 120, 0.15); }
+
+.nobase { position: fixed; z-index: 4; left: 50%; top: 42%; transform: translate(-50%, -50%); display: flex; flex-direction: column;
+  align-items: center; gap: 8px; pointer-events: none; text-align: center; }
+.nobase strong { font-size: 44px; letter-spacing: 0.2em; color: rgba(127, 231, 255, 0.55); }
+.nobase span { font-size: 14px; color: var(--dim); }
+
+.info input, .info select { width: 100%; box-sizing: border-box; margin: 6px 0; }
+.info select { font: inherit; color: var(--text); background: #06243a; border: 1px solid var(--line); border-radius: 4px; padding: 4px; }
+.info .param { display: block; margin: 6px 0; }
 .info .live { margin: 8px 0; font-size: 12px; white-space: pre-line; color: #fff1a8; font-family: ui-monospace, monospace; }
+.info .live.status-idle { color: var(--dim); }
+.info .live.status-error { color: #ff9b9b; }
+
+.app-qe .qe-system { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+.app-qe .qe-system strong { font-size: 32px; color: #fff1a8; }
+.app-qe table { width: 100%; border-collapse: collapse; }
+.app-qe th { text-align: left; font-weight: normal; padding: 4px 8px 4px 0; white-space: nowrap; }
+.app-qe td { padding: 4px 0; }
+.app-qe .bar { display: inline-block; width: 160px; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.12); overflow: hidden; vertical-align: middle; }
+.app-qe .bar i { display: block; height: 100%; background: #fff1a8; }
+.app-qe tr.status-idle { color: var(--dim); }
+.app-qe tr.status-error { color: #ff9b9b; }
 
 .info { right: 16px; top: 60px; width: 280px; padding: 12px 14px; font-size: 13px; user-select: text; }
 .info .kind { font-size: 11px; color: var(--accent); margin-bottom: 2px; }
@@ -112,7 +146,7 @@ input:focus { border-color: var(--accent); }
 .start-btn img { width: 22px; height: 22px; }
 .start-btn:hover, .task:hover, .tray-net:hover, .view-switch button:hover { background: rgba(127, 231, 255, 0.15); }
 .view-switch { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-.view-switch button { padding: 5px 12px; font-size: 13px; color: var(--dim); }
+.view-switch button { padding: 5px 12px; font-size: 13px; color: var(--dim); white-space: nowrap; }
 .view-switch button.active { background: rgba(127, 231, 255, 0.22); color: var(--text); }
 .task-list { flex: 1; display: flex; gap: 4px; overflow: hidden; }
 .task { max-width: 200px; padding: 6px 12px; border-radius: 6px; font-size: 13px; overflow: hidden;
@@ -134,3 +168,5 @@ input:focus { border-color: var(--accent); }
 .start-apps { flex: 1; min-height: 120px; overflow: auto; display: flex; flex-direction: column; }
 .start-app { text-align: left; padding: 6px 8px; border-radius: 6px; font-size: 13px; }
 .start-quit { padding: 8px; border-radius: 6px; border-top: 1px solid var(--line); }
+
+#diagram-hint { left: 296px; max-width: calc(100vw - 620px); }

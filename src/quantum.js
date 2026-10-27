@@ -38,6 +38,20 @@ export class QuantumState {
     this.apply1(q, [[[c, 0], [-s, 0]], [[s, 0], [c, 0]]]);
   }
 
+  // 제어 Ry: control 이 1 인 성분에서만 target 을 t 만큼 회전
+  cry(control, target, t) {
+    const { re, im } = this;
+    const c = Math.cos(t / 2), s = Math.sin(t / 2);
+    const cb = 1 << control, tb = 1 << target;
+    for (let i = 0; i < this.dim; i++) {
+      if (!(i & cb) || (i & tb)) continue;
+      const j = i | tb;
+      const xr = re[i], xi = im[i], yr = re[j], yi = im[j];
+      re[i] = c * xr - s * yr; im[i] = c * xi - s * yi;
+      re[j] = s * xr + c * yr; im[j] = s * xi + c * yi;
+    }
+  }
+
   cx(control, target) {
     const { re, im } = this;
     const cb = 1 << control, tb = 1 << target;

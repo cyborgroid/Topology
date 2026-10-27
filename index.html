@@ -18,18 +18,23 @@
 <body>
   <div id="stage"></div>
 
-  <!-- 다이어그램 뷰: Quantum Brain -->
+  <!-- 다이어그램 뷰: 양자 뉴런 블록 조립판 -->
+  <aside id="palette" class="panel palette"></aside>
   <aside id="info" class="panel info" hidden></aside>
+  <div id="nobase" class="nobase" hidden>
+    <strong>No Base</strong>
+    <span>왼쪽 팔레트에서 기능 블록을 꺼내 놓고, 같은 색 단자끼리 이어 시스템을 쌓아 올리세요.</span>
+  </div>
   <div id="diagram-hint" class="panel hint">
-    <b>Quantum Brain</b> · <b>왼쪽 드래그</b> 회전 · <b>오른쪽 드래그</b> 이동 · <b>스크롤</b> 다가가기/물러나기
-    · <b>클릭</b> 큐비트·게이트 선택 · <b>Space</b> 순전파 재생/멈춤 · <b>← →</b> 한 단계 · <b>층 이름</b> 그 층으로 · <b>Tab</b> 데스크톱
+    <b>블록 드래그</b> 옮기기 · <b>단자 드래그</b> 잇기 · <b>빈 곳 드래그</b> 회전 · <b>오른쪽 드래그</b> 이동
+    · <b>스크롤</b> 다가가기/물러나기 · <b>Delete</b> 지우기 · <b>Tab</b> 데스크톱
   </div>
 
   <!-- 데스크톱 뷰: 깊이 층 -->
   <aside id="depth-gauge" class="panel gauge"></aside>
   <div id="desktop-hint" class="panel hint">
     <b>스크롤 ↑</b> 안쪽(폴더)으로 · <b>스크롤 ↓</b> 바깥쪽(창)으로 · <b>폴더 클릭</b> 뒤에 다음 층 · <b>더블클릭</b> 들어가기/열기
-    · <b>Tab</b> Quantum Brain
+    · <b>Tab</b> 블록 조립판
   </div>
 
   <div id="start-menu" class="start-menu" hidden>
@@ -43,11 +48,12 @@
   <div class="taskbar">
     <button id="start-btn" class="start-btn"><img src="assets/icon.svg" alt="" /> Topology</button>
     <div id="view-switch" class="view-switch">
-      <button data-view="diagram" title="Quantum Brain (Tab)">◈ Quantum Brain</button>
+      <button data-view="diagram" title="양자 뉴런 블록 조립판 (Tab)">◈ 양자 뉴런 블록</button>
       <button data-view="desktop" title="데스크톱 뷰 (Tab)">▣ 데스크톱</button>
     </div>
     <div id="task-list" class="task-list"></div>
     <div class="tray">
+      <button id="tray-qe" class="tray-net" title="QE 시스템 출력"></button>
       <span id="tray-pos"></span>
       <button id="tray-net" class="tray-net"></button>
       <span id="tray-bat"></span>

@@ -118,3 +118,34 @@ export function networkApp() {
     },
   };
 }
+
+// 양자 뉴런 블록으로 조립한 시스템의 현재 상태. Topology 블록에 도달한 값이 시스템 출력이다.
+export function qeSystemApp(getSnapshot) {
+  return {
+    title: 'QE 시스템', icon: '📈', width: 520, height: 420,
+    build(body, win) {
+      body.classList.add('app-qe');
+      function refresh() {
+        const snap = getSnapshot();
+        const head = h('div', { className: 'qe-system' },
+          h('span', { className: 'dim', textContent: 'Topology 출력' }),
+          h('strong', { textContent: snap.system === null ? '—' : `${Math.round(snap.system * 100)}%` }));
+        if (!snap.blocks.length) {
+          body.replaceChildren(head, h('p', { className: 'dim', textContent: 'No Base — 양자 뉴런 블록 조립판에서 블록을 조립하세요.' }));
+          return;
+        }
+        body.replaceChildren(head, h('table', {}, ...snap.blocks.map((b) => {
+          const bar = h('span', { className: 'bar' }, h('i'));
+          bar.firstChild.style.width = b.status === 'ok' ? `${Math.round(b.value * 100)}%` : '0';
+          return h('tr', { className: `status-${b.status}` },
+            h('th', { textContent: b.name }),
+            h('td', {}, bar),
+            h('td', { textContent: b.status === 'ok' ? `${Math.round(b.value * 100)}%` : b.status === 'idle' ? '대기' : '오류' }));
+        })));
+      }
+      refresh();
+      const timer = setInterval(refresh, 1000);
+      win.cleanup.push(() => clearInterval(timer));
+    },
+  };
+}
