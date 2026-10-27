@@ -60,6 +60,23 @@ export const LINKS = [
   ['bigdata', 'data'],
 ];
 
+// 실제 폴더를 Topology 개념 노드에 접목한다. place 는 app/main.js 의 fs:places 키.
+// 홈(~) 은 Topology 중심에 붙고, 나머지 홈 폴더는 홈 노드 주변에 펼쳐진다.
+// dir 을 주면 그 방향으로 가지를 뻗고, 없으면 Topology 중심에서 바깥쪽으로 뻗는다.
+export const FILE_COLORS = { folder: 0x9fd8ff, file: 0xe8f4ff, more: 0x5f7f99 };
+
+export const ANCHORS = [
+  { place: 'home',      node: 'topology',   reason: '모든 데이터의 시작점', dir: [-0.9, 0.8, -1] },
+  { place: 'desktop',   node: 'topology',   reason: '화면 = Topology', dir: [1, 0.9, -1] },
+  { place: 'documents', node: 'instrument', reason: '기록은 Analog 의 언어' },
+  { place: 'templates', node: 'circuit',    reason: '설계의 틀' },
+  { place: 'downloads', node: 'network',    reason: '네트워크에서 들어온 데이터' },
+  { place: 'public',    node: 'network',    reason: '네트워크로 나가는 데이터' },
+  { place: 'pictures',  node: 'graphic',    reason: '그래픽' },
+  { place: 'videos',    node: 'graphic',    reason: '그래픽' },
+  { place: 'music',     node: 'qe',         reason: '자연의 소리' },
+];
+
 // 조작: 스크롤 = 전진/후진, Space = 상승, Shift+Space = 하강,
 // Shift+스크롤 = 좌우 이동, 드래그 = 시선, Shift 누르는 동안 정밀(느린) 이동.
 export const CONTROLS = {
