@@ -1,4 +1,4 @@
-// QE Analog Topology: PCB 회로 다이어그램(본 화면)과 깊이로 펼친 데스크톱, 두 뷰를 실제 OS 와 묶는다.
+// QE Analog Topology: Quantum Brain 다이어그램(본 화면)과 깊이로 펼친 데스크톱, 두 뷰를 실제 OS 와 묶는다.
 import { api } from './bridge.js';
 import { setView, activeName, isTyping } from './core.js';
 import * as diagram from './diagram.js';
@@ -13,12 +13,12 @@ const openApp = (app) => {
   setView('desktop');
   desktop.openWindow(app);
 };
-const showCircuit = () => {
+const showBrain = () => {
   setView('diagram');
   diagram.overview();
 };
 
-// 칩에 접목된 실제 폴더는 데스크톱 뷰의 폴더 층으로 연다.
+// 큐비트(개념)에 접목된 실제 폴더는 데스크톱 뷰의 폴더 층으로 연다.
 Object.assign(diagram.hooks, {
   folders: (id) => ANCHORS.filter((a) => a.node === id && places[a.place])
     .map((a) => ({ name: places[a.place].split('/').pop(), path: places[a.place] })),
@@ -33,7 +33,7 @@ setView('diagram');
 
 initTaskbar({
   builtins: [
-    { name: '회로', glyph: '◈', run: showCircuit },
+    { name: 'Quantum Brain', glyph: '◈', run: showBrain },
     { name: '데스크톱', glyph: '▣', run: () => setView('desktop') },
     { name: '터미널', glyph: '⌨', run: () => openApp(terminalApp(places.home)) },
     { name: '시스템', glyph: '🖥', run: () => openApp(systemApp()) },
@@ -52,7 +52,7 @@ addEventListener('keydown', (e) => {
 await desktop.init({
   places,
   specials: [
-    { name: 'Topology 회로', glyph: '◈', open: showCircuit },
+    { name: 'Quantum Brain', glyph: '◈', open: showBrain },
     { name: '홈', glyph: '🏠', path: places.home },
     { name: '터미널', glyph: '⌨', open: () => openApp(terminalApp(places.home)) },
   ],

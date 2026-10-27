@@ -18,24 +18,29 @@
 
 ## 두 가지 뷰 (작업 표시줄 또는 Tab 으로 전환)
 
-### ◈ 회로 — 본 화면
+### ◈ Quantum Brain — 본 화면
 
-Topology 전체가 하나의 **PCB 회로**다. 층은 겹겹이 쌓인 기판 레이어, 개념은 칩, 관계는 구리 배선이고,
-다른 층끼리는 비아(via)로 이어진다. 배선 위로 신호가 흐른다.
+QE(양자)로 짠 **AI 구조**, 즉 양자 신경망이다. 생물학적 뇌가 아니라 AI 아키텍처를 Quantum Engineering 으로 그린 것이다.
+Chassis 와 Circuit 은 Topology.md 에서 다루지 않는다고 했으므로 넣지 않는다.
 
-① 자연·양자(QE) → ② 하드웨어(Chassis, Circuit) → ③ 언어(Instrument) → ④ 화면(Topology)
-→ ⑤ 지능·표현(AI, Graphic) → ⑥ 네트워크(Network, 전화번호, 데이터, VPN, WIFI, 빅데이터)
+- **큐비트 = 개념** — QE, Instrument, Topology, AI, Graphic, Network, 전화번호, 데이터, VPN, WIFI, 빅데이터가 원형 고리로 놓인다.
+  역할은 입력(네트워크 쪽 개념) · 코어(QE, Instrument, Topology) · 출력(AI, Graphic, Network).
+- **층 = 신경망 구조** — 고리를 따라 앞으로 이어져 원통을 이룬다.
+  ① 입력 인코딩 → ② 양자 코어(QE 중첩) → ③ 은닉층(학습된 회전 + 얽힘 링) → ④ 은닉층(Instrument 제어) → ⑤ 네트워크 통합 → ⑥ 출력 측정
+- **게이트 = 블록** — 각 게이트는 Topology.md 의 문장 하나에 대응한다(정보 패널에 원문). 얽힘(CX)은 원통 안쪽을 가로지르는 선이다.
+- **실제 계산** — 11 큐비트 상태 벡터를 실제로 계산한다([src/quantum.js](src/quantum.js)). 순전파 커서가 지나가면 각 큐비트의
+  블로흐 구 화살표가 바뀌고, 다른 큐비트와 얽힐수록 화살표가 짧아진다. 끝에서 AI · Graphic · Network 를 측정한다.
 
 | 입력 | 동작 |
 | --- | --- |
-| 왼쪽 드래그 | 회전 |
-| 오른쪽 드래그 | 이동 |
-| 스크롤 / 가운데 드래그 | 다가가기 · 물러나기 (Shift+스크롤 = 천천히) |
-| 클릭 | 칩 선택 — 그 칩의 배선만 밝아지고 신호가 흐른다 |
-| 더블클릭 | 칩으로 다가가기 · 빈 곳이면 전체 보기 |
-| Home / Esc | 전체 보기 / 선택 해제 |
+| 왼쪽 드래그 / 오른쪽 드래그 | 회전 / 이동 |
+| 스크롤, 가운데 드래그 | 다가가기 · 물러나기 (Shift+스크롤 = 천천히) |
+| 클릭 | 큐비트(블로흐 구·선) 또는 게이트 선택 → 정보 패널 |
+| 더블클릭 | 그곳으로 다가가기 · 빈 곳이면 전체 보기 |
+| Space / ← → | 순전파 재생·멈춤 / 한 단계씩 |
+| 층 이름 클릭 | 그 층으로 이동 |
 
-정보 패널의 **접목된 폴더** 버튼(예: Instrument → 📁 Documents)을 누르면 데스크톱 뷰에서 그 폴더 층이 열린다.
+큐비트 정보 패널의 **접목된 폴더** 버튼(예: Instrument → 📁 Documents)을 누르면 데스크톱 뷰에서 그 폴더 층이 열린다.
 
 ### ▣ 데스크톱 — 깊이로 펼친 Digital OS
 
@@ -64,7 +69,8 @@ Topology 전체가 하나의 **PCB 회로**다. 층은 겹겹이 쌓인 기판 �
 - [app/os-api.js](app/os-api.js) — 실제 OS 연결(파일, 앱, nmcli, 시스템 정보). 두 실행 방식이 함께 쓴다
 - [src/bridge.js](src/bridge.js) — 화면 쪽 API (Electron 이면 preload, 아니면 토큰으로 서버 호출)
 - [src/core.js](src/core.js) — 렌더러와 뷰 전환
-- [src/diagram.js](src/diagram.js) — 회로 뷰: 기판, 칩, 배선·비아, 신호 펄스, 마우스 궤도 카메라
+- [src/diagram.js](src/diagram.js) — Quantum Brain 뷰: 큐비트 고리, 층, 게이트, 블로흐 구, 순전파 재생, 마우스 궤도 카메라
+- [src/quantum.js](src/quantum.js) — 상태 벡터 시뮬레이터(H, Rx, Ry, CX, 블로흐 벡터)
 - [src/desktop.js](src/desktop.js) — 데스크톱 뷰: 창 층 · 바탕화면 · 폴더 층, 스크롤 깊이 이동
 - [src/taskbar.js](src/taskbar.js), [src/apps.js](src/apps.js) — 작업 표시줄·시작 메뉴, 내장 앱
-- [src/topology.config.js](src/topology.config.js) — 개념, 기판 층(TIERS), 배선(LINKS), 폴더 접목(ANCHORS)
+- [src/topology.config.js](src/topology.config.js) — 개념(큐비트), 역할, 신경망 층(LAYERS), 게이트(GATES), 폴더 접목(ANCHORS)

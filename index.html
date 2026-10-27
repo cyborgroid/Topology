@@ -18,18 +18,18 @@
 <body>
   <div id="stage"></div>
 
-  <!-- 다이어그램 뷰: PCB 회로 -->
+  <!-- 다이어그램 뷰: Quantum Brain -->
   <aside id="info" class="panel info" hidden></aside>
   <div id="diagram-hint" class="panel hint">
-    <b>왼쪽 드래그</b> 회전 · <b>오른쪽 드래그</b> 이동 · <b>스크롤</b> 다가가기/물러나기 · <b>클릭</b> 칩 선택
-    · <b>더블클릭</b> 칩 확대 / 빈 곳 = 전체 · <b>Tab</b> 데스크톱
+    <b>Quantum Brain</b> · <b>왼쪽 드래그</b> 회전 · <b>오른쪽 드래그</b> 이동 · <b>스크롤</b> 다가가기/물러나기
+    · <b>클릭</b> 큐비트·게이트 선택 · <b>Space</b> 순전파 재생/멈춤 · <b>← →</b> 한 단계 · <b>층 이름</b> 그 층으로 · <b>Tab</b> 데스크톱
   </div>
 
   <!-- 데스크톱 뷰: 깊이 층 -->
   <aside id="depth-gauge" class="panel gauge"></aside>
   <div id="desktop-hint" class="panel hint">
     <b>스크롤 ↑</b> 안쪽(폴더)으로 · <b>스크롤 ↓</b> 바깥쪽(창)으로 · <b>폴더 클릭</b> 뒤에 다음 층 · <b>더블클릭</b> 들어가기/열기
-    · <b>Tab</b> 회로
+    · <b>Tab</b> Quantum Brain
   </div>
 
   <div id="start-menu" class="start-menu" hidden>
@@ -43,7 +43,7 @@
   <div class="taskbar">
     <button id="start-btn" class="start-btn"><img src="assets/icon.svg" alt="" /> Topology</button>
     <div id="view-switch" class="view-switch">
-      <button data-view="diagram" title="회로 다이어그램 (Tab)">◈ 회로</button>
+      <button data-view="diagram" title="Quantum Brain (Tab)">◈ Quantum Brain</button>
       <button data-view="desktop" title="데스크톱 뷰 (Tab)">▣ 데스크톱</button>
     </div>
     <div id="task-list" class="task-list"></div>

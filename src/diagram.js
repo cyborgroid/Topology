@@ -1,22 +1,25 @@
-// 다이어그램 뷰: QE Analog Topology 전체를 하나의 PCB 회로로 보여 준다. 조작은 마우스만 쓴다.
-// 층(TIERS)은 겹겹이 쌓인 기판 레이어, 개념은 칩, 관계(LINKS)는 구리 배선이고
-// 다른 층끼리는 비아(via)로 이어진다. 배선 위로 신호가 흐른다.
+// 다이어그램 뷰: Quantum Brain — QE(양자)로 짠 AI 구조(양자 신경망)를 3D 로 보여 준다.
+// 큐비트(개념)는 원형 고리로 놓이고, 신경망의 층(LAYERS)이 그 고리를 따라 앞으로 이어져 원통을 이룬다.
+// 게이트는 블록이고, 얽힘(CX)은 원통 안쪽을 가로지르는 연결선이다.
+// 상태는 실제로 계산하며(quantum.js), 순전파 커서가 지나갈 때마다 블로흐 구가 바뀐다.
 import * as THREE from 'three';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { canvas, registerView, isActive, isTyping, isUi, onViewChange } from './core.js';
-import { GROUPS, NODES, TIERS, LINKS, CONTROLS } from './topology.config.js';
+import { GROUPS, NODES, QUBITS, ROLES, LAYERS, GATES, CONTROLS } from './topology.config.js';
+import { QuantumState } from './quantum.js';
 
 const WATER = 0x04223a;
-const LAYER_STEP = 5.5;
-const BOARD_W = 28, BOARD_D = 13;
-const CHIP_H = 0.6, CHIP_D = 2.6;
+const RING = 7;          // 큐비트 고리의 반지름
+const COL = 1.7;         // 게이트 열 간격
+const LAYER_GAP = 3.2;   // 층 사이 간격
+const SPEED = 2.5;       // 순전파 속도(게이트/초)
 
 export const scene = new THREE.Scene();
 scene.background = new THREE.Color(WATER);
-scene.fog = new THREE.FogExp2(WATER, 0.008);
+scene.fog = new THREE.FogExp2(WATER, 0.007);
 scene.add(new THREE.HemisphereLight(0xbff4ff, 0x021018, 1.3));
-const sun = new THREE.DirectionalLight(0xffffff, 1.8);
-sun.position.set(15, 40, 25);
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(-10, 30, 25);
 scene.add(sun);
 
 export const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 800);
@@ -30,9 +33,21 @@ const infoEl = document.getElementById('info');
 const hintEl = document.getElementById('diagram-hint');
 
 export const hooks = {
-  folders: () => [],      // 칩에 접목된 실제 폴더 [{ name, path }]
+  folders: () => [],      // 큐비트(개념)에 접목된 실제 폴더 [{ name, path }]
   openFolder: () => {},   // 데스크톱 뷰에서 그 폴더 열기
 };
+
+const defs = Object.fromEntries(NODES.map((n) => [n.id, n]));
+const qIndex = Object.fromEntries(QUBITS.map((id, i) => [id, i]));
+const N = QUBITS.length;
+const colorOf = (id) => GROUPS[defs[id].group].color;
+const hex = (c) => `#${c.toString(16).padStart(6, '0')}`;
+
+// 고리 위 큐비트 q 의 x 위치에서의 점 (QE 가 맨 위)
+function ringPos(q, x, r = RING) {
+  const a = Math.PI / 2 - (q / N) * Math.PI * 2;
+  return new THREE.Vector3(x, r * Math.sin(a), r * Math.cos(a));
+}
 
 function label(text, className, parent, position, center = [0.5, 0.5]) {
   const el = document.createElement('div');
@@ -45,178 +60,221 @@ function label(text, className, parent, position, center = [0.5, 0.5]) {
   return el;
 }
 
-// --- 회로 구성 ------------------------------------------------------------------
-const chips = new Map();    // id -> { mesh, def, tier, layer, label }
-const traces = [];          // { a, b, material, points, cum, length }
-const layerY = (i) => -i * LAYER_STEP;
-const surfaceY = (i) => layerY(i) - CHIP_H / 2 + 0.02;
+const involved = (g) => [...(g.controls ?? []), ...g.targets];
 
-const copper = () => new THREE.MeshStandardMaterial({ color: 0xc58b3a, emissive: 0xc58b3a, emissiveIntensity: 0.25, metalness: 0.6, roughness: 0.35 });
-
-function buildBoards() {
-  TIERS.forEach((tier, i) => {
-    const board = new THREE.Mesh(
-      new THREE.BoxGeometry(BOARD_W, 0.22, BOARD_D),
-      new THREE.MeshStandardMaterial({ color: 0x0b3d2e, transparent: true, opacity: 0.72, roughness: 0.8, depthWrite: false }),
-    );
-    board.position.set(0, layerY(i) - CHIP_H / 2 - 0.11, 0);
-    board.add(new THREE.LineSegments(
-      new THREE.EdgesGeometry(board.geometry),
-      new THREE.LineBasicMaterial({ color: 0x2fdc9a, transparent: true, opacity: 0.45 }),
-    ));
-    scene.add(board);
-    // 기판 앞쪽 왼편의 실크스크린 글씨
-    label(tier.name, 'label-tier', board, new THREE.Vector3(-BOARD_W / 2 + 0.4, 0.2, BOARD_D / 2 - 0.4), [0, 1]);
-  });
+// --- 순전파 계산: frames[g] = 게이트 g 직전의 블로흐 벡터들 ----------------------------
+const frames = [];
+function simulate() {
+  const s = new QuantumState(N);
+  const snap = () => frames.push(QUBITS.map((_, q) => s.bloch(q)));
+  snap();
+  for (const g of GATES) {
+    const ts = g.targets.map((id) => qIndex[id]);
+    if (g.kind === 'H') ts.forEach((q) => s.h(q));
+    if (g.kind === 'RX') ts.forEach((q) => s.rx(q, g.angle));
+    if (g.kind === 'RY') ts.forEach((q) => s.ry(q, g.angle));
+    if (g.kind === 'CX') for (const c of g.controls) for (const t of g.targets) s.cx(qIndex[c], qIndex[t]);
+    snap();
+  }
 }
 
-function buildChips() {
-  const defs = Object.fromEntries(NODES.map((n) => [n.id, n]));
-  const pins = [];
-  TIERS.forEach((tier, i) => {
-    const n = tier.blocks.length;
-    const spacing = Math.min(8, (BOARD_W - 4) / n);
-    tier.blocks.forEach((id, j) => {
-      const def = defs[id];
-      const w = n > 2 && j > 0 ? 3.2 : 4.6;
-      const color = GROUPS[def.group].color;
-      const mesh = new THREE.Mesh(
-        new THREE.BoxGeometry(w, CHIP_H, CHIP_D),
-        new THREE.MeshStandardMaterial({ color: 0x18222c, emissive: color, emissiveIntensity: 0.05, roughness: 0.45 }),
-      );
-      mesh.position.set((j - (n - 1) / 2) * spacing, layerY(i), -1);
-      // 윗면 앞쪽의 색 띠 = 개념 그룹
-      const stripe = new THREE.Mesh(
-        new THREE.BoxGeometry(w * 0.92, 0.02, 0.32),
-        new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.6 }),
-      );
-      stripe.position.set(0, CHIP_H / 2 + 0.01, CHIP_D / 2 - 0.3);
-      mesh.add(stripe);
-      // 양쪽 긴 변의 핀
-      for (let x = -w / 2 + 0.3; x <= w / 2 - 0.2; x += 0.4) {
-        for (const side of [-1, 1]) pins.push(new THREE.Vector3(mesh.position.x + x, layerY(i) - 0.1, mesh.position.z + side * (CHIP_D / 2 + 0.12)));
-      }
-      mesh.userData = { id };
-      scene.add(mesh);
-      const el = label(def.name, 'label-chip', mesh, new THREE.Vector3(0, CHIP_H / 2 + 0.35, -0.1));
-      el.style.setProperty('--chip', `#${color.toString(16).padStart(6, '0')}`);
-      chips.set(id, { mesh, def, tier: tier.name, layer: i, label: el });
+// --- 배치: 층마다 겹치지 않는 게이트는 같은 열에 놓는다 -----------------------------------
+const gateX = [];
+const layerSpan = [];
+let xStart = 0, xEnd = 0;
+function layout() {
+  let x = 0;
+  for (const layer of LAYERS) {
+    const busy = new Array(N).fill(0);
+    let cols = 1;
+    GATES.forEach((g, i) => {
+      if (g.layer !== layer.id) return;
+      const qs = involved(g).map((id) => qIndex[id]);
+      const col = Math.max(...qs.map((q) => busy[q]));
+      qs.forEach((q) => { busy[q] = col + 1; });
+      gateX[i] = x + col * COL;
+      cols = Math.max(cols, col + 1);
     });
-  });
-
-  const pinMesh = new THREE.InstancedMesh(
-    new THREE.BoxGeometry(0.12, 0.14, 0.26),
-    new THREE.MeshStandardMaterial({ color: 0xb8c4cc, metalness: 0.9, roughness: 0.3 }),
-    pins.length,
-  );
-  const m = new THREE.Matrix4();
-  pins.forEach((p, k) => pinMesh.setMatrixAt(k, m.makeTranslation(p.x, p.y, p.z)));
-  scene.add(pinMesh);
-}
-
-// 한 칩의 같은 변에서 여러 배선이 나가면 핀 위치를 조금씩 비켜 준다.
-const ports = new Map();
-function portX(id, side) {
-  const key = `${id}:${side}`;
-  const k = ports.get(key) ?? 0;
-  ports.set(key, k + 1);
-  return chips.get(id).mesh.position.x + ((k % 5) - 2) * 0.45;
-}
-
-function buildTraces() {
-  const cross = LINKS.filter(([a, b]) => chips.get(a).layer !== chips.get(b).layer);
-  const lanes = new Map();
-  for (const [a, b] of LINKS) {
-    const A = chips.get(a), B = chips.get(b);
-    let points;
-    if (A.layer === B.layer) {
-      // 같은 기판: 칩 앞쪽 레인을 따라 직각으로 잇는다.
-      const lane = lanes.get(A.layer) ?? 0;
-      lanes.set(A.layer, lane + 1);
-      const y = surfaceY(A.layer), z0 = A.mesh.position.z + CHIP_D / 2 + 0.3, zl = 1.4 + lane * 0.6;
-      const xa = portX(a, 'front'), xb = portX(b, 'front');
-      points = [[xa, y, z0], [xa, y, zl], [xb, y, zl], [xb, y, z0]];
-    } else {
-      // 다른 기판: 칩 뒤쪽에서 비아 열까지 간 뒤 수직으로 내려가 상대 칩 뒤쪽으로 들어간다.
-      const k = cross.findIndex(([x, y]) => x === a && y === b);
-      const vx = -BOARD_W / 2 + 2 + (k + 0.5) * ((BOARD_W - 4) / cross.length);
-      const vz = -3.4 - (k % 4) * 0.9;
-      const ya = surfaceY(A.layer), yb = surfaceY(B.layer);
-      const za = A.mesh.position.z - CHIP_D / 2 - 0.3, zb = B.mesh.position.z - CHIP_D / 2 - 0.3;
-      const xa = portX(a, 'back'), xb = portX(b, 'back');
-      points = [[xa, ya, za], [xa, ya, vz], [vx, ya, vz], [vx, yb, vz], [xb, yb, vz], [xb, yb, zb]];
-    }
-    traces.push(makeTrace(a, b, points.map((p) => new THREE.Vector3(...p))));
+    layerSpan.push({ layer, from: x - COL / 2, to: x + (cols - 1) * COL + COL / 2, first: GATES.findIndex((g) => g.layer === layer.id) });
+    x += (cols - 1) * COL + LAYER_GAP;
   }
+  xStart = -2;
+  xEnd = x - LAYER_GAP + 2;
 }
 
-function makeTrace(a, b, points) {
-  const material = copper();
-  const group = new THREE.Group();
-  const cum = [0];
-  for (let i = 1; i < points.length; i++) {
-    const p = points[i - 1], q = points[i];
-    const len = p.distanceTo(q);
-    cum.push(cum[i - 1] + len);
-    const mid = p.clone().add(q).multiplyScalar(0.5);
-    let seg;
-    if (Math.abs(p.y - q.y) > 1e-6) {
-      seg = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, len, 8), material);   // 비아
-      for (const end of [p, q]) {
-        const pad = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.05, 12), material);
-        pad.position.copy(end);
-        group.add(pad);
+// --- 그리기 ---------------------------------------------------------------------
+const pickables = [];       // 고를 수 있는 메시 (userData: { type, index })
+const gateParts = [];       // gateParts[g] = 그 게이트의 재질들
+const bloch = [];           // bloch[q] = { arrow, shaft, head, dot }
+const readouts = new Map(); // 출력 큐비트 -> 확률 막대 라벨
+let cursor;
+
+const material = (color, intensity = 0.25, extra = {}) => new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: intensity, roughness: 0.4, ...extra });
+
+function buildWires() {
+  QUBITS.forEach((id, q) => {
+    const color = colorOf(id);
+    const a = ringPos(q, xStart - 1.5), b = ringPos(q, xEnd + 1);
+    const wire = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, a.distanceTo(b), 8), material(color, 0.5));
+    wire.position.copy(a).add(b).multiplyScalar(0.5);
+    wire.rotation.z = Math.PI / 2;
+    wire.userData = { type: 'qubit', index: q };
+    scene.add(wire);
+    pickables.push(wire);
+
+    // 시작점의 블로흐 구
+    const center = ringPos(q, xStart - 4);
+    const sphere = new THREE.Mesh(
+      new THREE.SphereGeometry(0.95, 20, 14),
+      new THREE.MeshBasicMaterial({ color, wireframe: true, transparent: true, opacity: 0.22 }),
+    );
+    sphere.position.copy(center);
+    sphere.userData = { type: 'qubit', index: q };
+    scene.add(sphere);
+    pickables.push(sphere);
+    const arrow = new THREE.Group();
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1, 8).translate(0, 0.5, 0), material(0xffffff, 0.6));
+    const head = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.32, 12), material(color, 0.9));
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8), material(color, 0.9));
+    arrow.add(shaft, head);
+    arrow.position.copy(center);
+    dot.position.copy(center);
+    scene.add(arrow, dot);
+    bloch.push({ arrow, shaft, head, dot });
+
+    const out = center.clone().sub(new THREE.Vector3(center.x, 0, 0)).setLength(1.9);
+    const el = label(`|0⟩ ${defs[id].name}`, 'label-qubit', sphere, out);
+    el.style.setProperty('--q', hex(color));
+    el.dataset.role = ROLES[id];
+  });
+}
+
+function gateBlock(kind, pos, g, color) {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.95, 0.95), material(color, 0.3));
+  mesh.position.copy(pos);
+  mesh.userData = { type: 'gate', index: g };
+  scene.add(mesh);
+  pickables.push(mesh);
+  // 블록에는 종류만 쓰고, 회전 각도는 정보 패널에서 보여 준다.
+  label({ H: 'H', M: 'M', RX: 'Rx', RY: 'Ry' }[kind], 'label-gate', mesh, new THREE.Vector3(0, 0, 0));
+  return mesh.material;
+}
+
+function buildGates() {
+  GATES.forEach((g, i) => {
+    const x = gateX[i];
+    const mats = [];
+    if (g.kind === 'CX') {
+      // 제어 = 점, 대상 = ⊕ 고리, 둘을 원통 안쪽을 가로지르는 선으로 잇는다.
+      for (const c of g.controls) {
+        const p = ringPos(qIndex[c], x);
+        const dot = new THREE.Mesh(new THREE.SphereGeometry(0.24, 14, 10), material(0x7fe7ff, 0.6));
+        dot.position.copy(p);
+        dot.userData = { type: 'gate', index: i };
+        scene.add(dot);
+        pickables.push(dot);
+        mats.push(dot.material);
+        for (const t of g.targets) {
+          const q = ringPos(qIndex[t], x);
+          const link = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, p.distanceTo(q), 6), material(0x7fe7ff, 0.4, { transparent: true, opacity: 0.8 }));
+          link.position.copy(p).add(q).multiplyScalar(0.5);
+          link.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), q.clone().sub(p).normalize());
+          scene.add(link);
+          mats.push(link.material);
+        }
+      }
+      for (const t of g.targets) {
+        const p = ringPos(qIndex[t], x);
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(0.4, 0.07, 8, 24), material(0x7fe7ff, 0.6));
+        ring.position.copy(p);
+        ring.rotation.y = Math.PI / 2;
+        ring.userData = { type: 'gate', index: i };
+        scene.add(ring);
+        pickables.push(ring);
+        mats.push(ring.material);
       }
     } else {
-      const alongX = Math.abs(p.x - q.x) > Math.abs(p.z - q.z);
-      seg = new THREE.Mesh(new THREE.BoxGeometry(alongX ? len + 0.14 : 0.14, 0.03, alongX ? 0.14 : len + 0.14), material);
+      const color = g.kind === 'H' ? 0xe0b341 : g.kind === 'M' ? 0x3a4b5c : g.layer === 'input' ? 0x2fd6a0 : 0xd55fbf;
+      for (const t of g.targets) mats.push(gateBlock(g.kind, ringPos(qIndex[t], x), i, color));
     }
-    seg.position.copy(mid);
-    group.add(seg);
+    gateParts[i] = mats;
+  });
+
+  // 출력 큐비트의 측정값: 마지막 열 바깥에 확률 막대
+  const m = GATES.length - 1;
+  for (const id of GATES[m].targets) {
+    const pos = ringPos(qIndex[id], gateX[m] + 2.2);
+    const el = label('', 'label-readout', scene, pos, [0, 0.5]);
+    el.innerHTML = '<span class="name"></span><span class="bar"><i></i></span><span class="value"></span>';
+    el.querySelector('.name').textContent = defs[id].name;
+    readouts.set(id, el);
   }
-  scene.add(group);
-  return { a, b, material, points, cum, length: cum[cum.length - 1] };
 }
 
-// 배선마다 두 개의 신호 펄스가 흐른다.
-const PULSES_PER_TRACE = 2;
-let pulses;
-function buildPulses() {
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(traces.length * PULSES_PER_TRACE * 3), 3));
-  pulses = new THREE.Points(geo, new THREE.PointsMaterial({
-    color: 0xfff1a8, size: 0.32, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false,
-  }));
-  pulses.frustumCulled = false;
-  scene.add(pulses);
+function buildLayers() {
+  layerSpan.forEach((span, i) => {
+    const len = span.to - span.from;
+    const shell = new THREE.Mesh(
+      new THREE.CylinderGeometry(RING + 1.3, RING + 1.3, len, 48, 1, true),
+      new THREE.MeshBasicMaterial({ color: 0x7fe7ff, transparent: true, opacity: 0.035, side: THREE.DoubleSide, depthWrite: false }),
+    );
+    shell.rotation.z = Math.PI / 2;
+    shell.position.set((span.from + span.to) / 2, 0, 0);
+    scene.add(shell);
+    for (const x of [span.from, span.to]) {
+      const edge = new THREE.Mesh(new THREE.TorusGeometry(RING + 1.3, 0.03, 6, 64), new THREE.MeshBasicMaterial({ color: 0x7fe7ff, transparent: true, opacity: 0.35 }));
+      edge.position.set(x, 0, 0);
+      edge.rotation.y = Math.PI / 2;
+      scene.add(edge);
+    }
+    // 짧은 층이 이어지면 이름이 겹치므로 높이를 번갈아 둔다.
+    const el = label(span.layer.name, 'label-layer', scene, new THREE.Vector3((span.from + span.to) / 2, RING + 2.4 + (i % 2) * 1.6, 0));
+    el.title = span.layer.desc;
+    el.addEventListener('click', () => { time = span.first; playing = false; selectLayer(span); });
+  });
+
+  // 순전파 커서: 지금 계산 중인 위치를 가로지르는 원판
+  cursor = new THREE.Mesh(
+    new THREE.CircleGeometry(RING + 1.3, 64),
+    new THREE.MeshBasicMaterial({ color: 0xfff1a8, transparent: true, opacity: 0.07, side: THREE.DoubleSide, depthWrite: false }),
+  );
+  cursor.rotation.y = Math.PI / 2;
+  cursor.add(new THREE.Mesh(new THREE.TorusGeometry(RING + 1.3, 0.06, 6, 64), new THREE.MeshBasicMaterial({ color: 0xfff1a8 })));
+  scene.add(cursor);
 }
 
-function pointAt(trace, s, out) {
-  let i = 1;
-  while (i < trace.cum.length - 1 && trace.cum[i] < s) i++;
-  const t = (s - trace.cum[i - 1]) / (trace.cum[i] - trace.cum[i - 1] || 1);
-  return out.lerpVectors(trace.points[i - 1], trace.points[i], t);
+// --- 순전파 재생 -------------------------------------------------------------------
+let time = 0, playing = true, holdUntil = 0;
+const gateIndex = () => Math.min(Math.floor(time), GATES.length - 1);
+const cursorX = () => {
+  const i = Math.floor(time), f = time - i;
+  if (i >= GATES.length - 1) return gateX[GATES.length - 1] + f * 2;
+  return THREE.MathUtils.lerp(gateX[i], gateX[i + 1], f);
+};
+
+// 지금 시점의 큐비트 q 블로흐 벡터 (게이트를 지나는 동안 부드럽게 바뀐다)
+function blochNow(q) {
+  const i = Math.min(Math.floor(time), GATES.length);
+  const f = THREE.MathUtils.smoothstep(time - i, 0, 1);
+  const a = frames[i][q], b = frames[Math.min(i + 1, GATES.length)][q];
+  return a.map((v, k) => THREE.MathUtils.lerp(v, b[k], f));
 }
 
 // --- 카메라: 마우스로 도는 궤도 -------------------------------------------------------
-const OVERVIEW = {
-  target: new THREE.Vector3(0, layerY((TIERS.length - 1) / 2), -1),
-  offset: new THREE.Vector3(0.6, 0.85, 1.2).normalize().multiplyScalar(50),
-};
 const goal = { target: new THREE.Vector3(), sph: new THREE.Spherical() };
 const cur = { target: new THREE.Vector3(), sph: new THREE.Spherical() };
+let overviewView;
 
 function aimAt(target, offset) {
   goal.target.copy(target);
   goal.sph.setFromVector3(offset);
 }
-export const overview = () => aimAt(OVERVIEW.target, OVERVIEW.offset);
-function focusChip(id) {
-  aimAt(chips.get(id).mesh.position, new THREE.Vector3(0.5, 0.75, 1).normalize().multiplyScalar(13));
-}
+export const overview = () => aimAt(overviewView.target, overviewView.offset);
+const focusOn = (pos) => aimAt(pos, new THREE.Vector3(-0.4, 0.45, 1).normalize().multiplyScalar(14));
 
 // --- 선택과 정보 패널 --------------------------------------------------------------
-let selectedId = null, hoveredId = null;
+let selected = null, hovered = null;   // { type: 'gate' | 'qubit' | 'layer', index }
+let liveEl = null;
 
 function h(tag, props = {}, ...children) {
   const el = Object.assign(document.createElement(tag), props);
@@ -224,45 +282,72 @@ function h(tag, props = {}, ...children) {
   return el;
 }
 
-export function select(id) {
-  selectedId = id;
-  renderInfo();
+const KIND = { H: 'H · 중첩', RX: 'Rx · 회전', RY: 'Ry · 회전', CX: 'CX · 얽힘', M: 'M · 측정' };
+const layerOf = (id) => LAYERS.find((l) => l.id === id);
+
+function select(sel) {
+  selected = sel;
+  liveEl = null;
+  if (!sel) { infoEl.hidden = true; return; }
+  infoEl.hidden = !isActive(view);
+  if (sel.type === 'gate') {
+    const g = GATES[sel.index];
+    const go = h('button', { textContent: '이 단계로 이동' });
+    go.addEventListener('click', () => { time = sel.index; playing = false; });
+    infoEl.replaceChildren(
+      h('div', { className: 'kind', textContent: `게이트 ${KIND[g.kind]} · ${layerOf(g.layer).name}` }),
+      h('strong', { textContent: involved(g).map((id) => defs[id].name).join(g.kind === 'CX' ? ' → ' : ', ') }),
+      h('p', { textContent: g.note }),
+      ...(g.angle !== undefined ? [h('div', { className: 'dim', textContent: `회전 각 ${g.angle.toFixed(2)} rad` })] : []),
+      h('div', { className: 'actions' }, go),
+    );
+  } else if (sel.type === 'qubit') {
+    const id = QUBITS[sel.index];
+    liveEl = h('div', { className: 'live' });
+    const folders = hooks.folders(id).map((f) => {
+      const b = h('button', { textContent: `📁 ${f.name}`, title: `${f.path} — 데스크톱에서 열기` });
+      b.addEventListener('click', () => hooks.openFolder(f.path));
+      return b;
+    });
+    infoEl.replaceChildren(
+      h('div', { className: 'kind', textContent: `큐비트 · ${ROLES[id]}` }),
+      h('strong', { textContent: defs[id].name }),
+      h('p', { textContent: defs[id].desc }),
+      liveEl,
+      ...(folders.length ? [h('div', { className: 'dim', textContent: '접목된 폴더 (데스크톱에서 열기)' }), h('div', { className: 'actions' }, ...folders)] : []),
+    );
+  }
 }
 
-function renderInfo() {
-  const chip = chips.get(selectedId);
-  if (!chip) { infoEl.hidden = true; return; }
+function selectLayer(span) {
+  selected = { type: 'layer', index: LAYERS.indexOf(span.layer) };
+  liveEl = null;
   infoEl.hidden = !isActive(view);
-  const linked = LINKS.filter((l) => l.includes(selectedId)).map((l) => (l[0] === selectedId ? l[1] : l[0]));
-  const linkButtons = linked.map((id) => {
-    const b = h('button', { textContent: chips.get(id).def.name });
-    b.addEventListener('click', () => { select(id); focusChip(id); });
-    return b;
-  });
-  const folderButtons = hooks.folders(selectedId).map((f) => {
-    const b = h('button', { textContent: `📁 ${f.name}`, title: `${f.path} — 데스크톱에서 열기` });
-    b.addEventListener('click', () => hooks.openFolder(f.path));
-    return b;
-  });
   infoEl.replaceChildren(
-    h('div', { className: 'kind', textContent: `칩 · ${chip.tier}` }),
-    h('strong', { textContent: chip.def.name }),
-    h('p', { textContent: chip.def.desc }),
-    h('div', { className: 'dim', textContent: '연결된 칩' }),
-    h('div', { className: 'actions' }, ...linkButtons),
-    ...(folderButtons.length ? [h('div', { className: 'dim', textContent: '접목된 폴더 (데스크톱에서 열기)' }), h('div', { className: 'actions' }, ...folderButtons)] : []),
+    h('div', { className: 'kind', textContent: '층' }),
+    h('strong', { textContent: span.layer.name }),
+    h('p', { textContent: span.layer.desc }),
   );
 }
 
-// --- 마우스 ---------------------------------------------------------------------
-// 왼쪽 드래그 = 회전, 오른쪽 드래그 = 이동, 가운데 드래그 = 확대/축소,
-// 스크롤 = 회로로 다가가기(↑)/물러나기(↓), Shift+스크롤 = 천천히,
-// 클릭 = 칩 선택, 더블클릭 = 칩으로 다가가기(빈 곳이면 전체 보기).
+function updateLive() {
+  if (!liveEl || selected?.type !== 'qubit') return;
+  const [x, y, z] = blochNow(selected.index);
+  const r = Math.hypot(x, y, z);
+  liveEl.textContent = `블로흐 (x ${x.toFixed(2)}, y ${y.toFixed(2)}, z ${z.toFixed(2)})\n`
+    + `1 이 나올 확률 ${((1 - z) / 2 * 100).toFixed(0)}%\n`
+    + (r < 0.95 ? `얽힘 ${((1 - r) * 100).toFixed(0)}% — 다른 큐비트와 얽혀 있다` : '순수 상태 — 아직 얽히지 않았다');
+}
+
+// --- 마우스 · 키보드 ---------------------------------------------------------------
+// 왼쪽 드래그 = 회전, 오른쪽 드래그 = 이동, 스크롤/가운데 드래그 = 다가가기·물러나기,
+// 클릭 = 게이트/큐비트 선택, 더블클릭 = 다가가기(빈 곳이면 전체 보기),
+// Space = 순전파 재생/멈춤, ← → = 한 단계씩, 층 이름 클릭 = 그 층으로.
 const raycaster = new THREE.Raycaster();
 function pick(e) {
   raycaster.setFromCamera(new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1), camera);
-  const meshes = [...chips.values()].map((c) => c.mesh);
-  return raycaster.intersectObjects(meshes, false)[0]?.object.userData.id ?? null;
+  const hit = raycaster.intersectObjects(pickables, false)[0];
+  return hit ? { ...hit.object.userData, point: hit.object.position } : null;
 }
 
 let drag = null;
@@ -275,8 +360,8 @@ canvas.addEventListener('pointerdown', (e) => {
 canvas.addEventListener('pointermove', (e) => {
   if (!isActive(view)) return;
   if (!drag) {
-    hoveredId = pick(e);
-    canvas.style.cursor = hoveredId ? 'pointer' : 'grab';
+    hovered = pick(e);
+    canvas.style.cursor = hovered ? 'pointer' : 'grab';
     return;
   }
   drag.moved += Math.abs(e.movementX) + Math.abs(e.movementY);
@@ -289,37 +374,42 @@ canvas.addEventListener('pointermove', (e) => {
     const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
     goal.target.addScaledVector(right, -e.movementX * k).addScaledVector(up, e.movementY * k);
   } else if (drag.button === 1) {
-    goal.sph.radius = THREE.MathUtils.clamp(goal.sph.radius * Math.exp(e.movementY * 0.01), 4, 120);
+    goal.sph.radius = THREE.MathUtils.clamp(goal.sph.radius * Math.exp(e.movementY * 0.01), 4, 140);
   }
 });
 canvas.addEventListener('pointerup', (e) => {
   if (!isActive(view) || !drag) return;
-  if (drag.button === 0 && drag.moved < 4) select(pick(e));
+  if (drag.button === 0 && drag.moved < 4) {
+    const p = pick(e);
+    select(p ? { type: p.type, index: p.index } : null);
+  }
   drag = null;
+});
+canvas.addEventListener('dblclick', (e) => {
+  if (!isActive(view)) return;
+  const p = pick(e);
+  if (p) focusOn(p.point); else overview();
 });
 addEventListener('wheel', (e) => {
   if (!isActive(view) || isUi(e.target)) return;
   e.preventDefault();
   const delta = THREE.MathUtils.clamp(e.deltaY || e.deltaX, -200, 200);
-  goal.sph.radius = THREE.MathUtils.clamp(goal.sph.radius * Math.exp(delta * 0.0012 * (e.shiftKey ? CONTROLS.fineFactor : 1)), 4, 120);
+  goal.sph.radius = THREE.MathUtils.clamp(goal.sph.radius * Math.exp(delta * 0.0012 * (e.shiftKey ? CONTROLS.fineFactor : 1)), 4, 140);
 }, { passive: false });
-
-canvas.addEventListener('dblclick', (e) => {
-  if (!isActive(view)) return;
-  const id = pick(e);
-  if (id) { select(id); focusChip(id); } else overview();
-});
 addEventListener('keydown', (e) => {
   if (!isActive(view) || isTyping(e.target)) return;
+  if (e.code === 'Space') { e.preventDefault(); playing = !playing; }
+  if (e.code === 'ArrowRight') { playing = false; time = Math.min(Math.floor(time) + 1, GATES.length); }
+  if (e.code === 'ArrowLeft') { playing = false; time = Math.max(Math.ceil(time) - 1, 0); }
   if (e.code === 'Home') overview();
   if (e.code === 'Escape') select(null);
 });
 
 // --- 프레임 --------------------------------------------------------------------
 const wrap = (a) => ((a + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
-const tmp = new THREE.Vector3();
+const UP = new THREE.Vector3(0, 1, 0);
 
-function update(dt, t) {
+function update(dt) {
   const k = 1 - Math.exp(-dt * 6);
   cur.target.lerp(goal.target, k);
   cur.sph.radius += (goal.sph.radius - cur.sph.radius) * k;
@@ -328,34 +418,48 @@ function update(dt, t) {
   camera.position.setFromSpherical(cur.sph).add(cur.target);
   camera.lookAt(cur.target);
 
-  // 고른(또는 가리킨) 칩에 닿는 배선과 칩은 밝게, 나머지는 어둡게
-  const active = selectedId ?? hoveredId;
-  for (const tr of traces) {
-    const on = !active || tr.a === active || tr.b === active;
-    const goalI = !active ? 0.3 : on ? 1.1 : 0.06;
-    tr.material.emissiveIntensity += (goalI - tr.material.emissiveIntensity) * k;
+  // 순전파: 끝까지 가면 잠시 멈췄다가 |0…0⟩ 부터 다시
+  const now = performance.now();
+  if (playing && now > holdUntil) {
+    if (time >= GATES.length) time = 0;
+    else {
+      time = Math.min(time + dt * SPEED, GATES.length);
+      if (time >= GATES.length) holdUntil = now + 3000;
+    }
   }
-  for (const [id, c] of chips) {
-    const near = !active || id === active || LINKS.some((l) => l.includes(active) && l.includes(id));
-    const goalI = id === selectedId ? 0.5 : id === hoveredId ? 0.3 : near ? 0.08 : 0.01;
-    c.mesh.material.emissiveIntensity += (goalI - c.mesh.material.emissiveIntensity) * k;
-    c.label.classList.toggle('dim-chip', !near);
-    c.label.classList.toggle('selected', id === selectedId);
-  }
+  cursor.position.x = cursorX();
 
-  // 신호 펄스: 선택이 있으면 그 칩의 배선에만 흐른다.
-  const arr = pulses.geometry.attributes.position.array;
-  traces.forEach((tr, i) => {
-    const on = !active || tr.a === active || tr.b === active;
-    for (let p = 0; p < PULSES_PER_TRACE; p++) {
-      const idx = (i * PULSES_PER_TRACE + p) * 3;
-      if (!on) { arr[idx] = arr[idx + 1] = arr[idx + 2] = 1e5; continue; }
-      const s = ((t * 3 + (p / PULSES_PER_TRACE) * tr.length + i * 1.7) % tr.length);
-      pointAt(tr, s, tmp).toArray(arr, idx);
-      arr[idx + 1] += 0.08;
+  // 블로흐 화살표: 길이 = 순수도(짧을수록 많이 얽힘). 블로흐 z → 위, x → 앞(+x), y → 옆(+z)
+  bloch.forEach((b, q) => {
+    const [x, y, z] = blochNow(q);
+    const v = new THREE.Vector3(x, z, y);
+    const len = v.length() * 0.95;
+    b.arrow.visible = len > 0.08;
+    if (b.arrow.visible) {
+      b.arrow.quaternion.setFromUnitVectors(UP, v.normalize());
+      b.shaft.scale.y = Math.max(len - 0.3, 0.01);
+      b.head.position.y = Math.max(len - 0.15, 0.15);
     }
   });
-  pulses.geometry.attributes.position.needsUpdate = true;
+
+  // 지금 지나는 게이트와 고른/가리킨 게이트를 밝게
+  const active = gateIndex();
+  gateParts.forEach((mats, i) => {
+    const on = i === active && time < GATES.length;
+    const pickedHere = (selected?.type === 'gate' && selected.index === i) || (hovered?.type === 'gate' && hovered.index === i);
+    const goalI = on ? 1.4 : pickedHere ? 0.9 : i < time ? 0.35 : 0.15;
+    for (const m of mats) m.emissiveIntensity += (goalI - m.emissiveIntensity) * k;
+  });
+
+  // 측정값: 측정 열을 지난 뒤에 확률을 보여 준다
+  const measured = time >= GATES.length - 1;
+  for (const [id, el] of readouts) {
+    const p1 = (1 - frames[GATES.length][qIndex[id]][2]) / 2;
+    el.classList.toggle('pending', !measured);
+    el.querySelector('i').style.width = measured ? `${(p1 * 100).toFixed(0)}%` : '0%';
+    el.querySelector('.value').textContent = measured ? `P(1) ${(p1 * 100).toFixed(0)}%` : '측정 전';
+  }
+  updateLive();
 }
 
 const view = {
@@ -364,16 +468,25 @@ const view = {
   update,
   render: () => labels.render(scene, camera),
   resize: () => labels.setSize(innerWidth, innerHeight),
-  status: () => (selectedId ? `${chips.get(selectedId).def.name} 선택` : '회로 전체'),
+  status: () => `${layerOf(GATES[gateIndex()].layer).name} · ${Math.min(Math.floor(time) + 1, GATES.length)}/${GATES.length}${playing ? '' : ' ⏸'}`,
 };
 registerView('diagram', view);
-onViewChange((name) => { infoEl.hidden = name !== 'diagram' || !selectedId; });
+onViewChange((name) => { infoEl.hidden = name !== 'diagram' || !selected; });
 
 export function build() {
-  buildBoards();
-  buildChips();
-  buildTraces();
-  buildPulses();
+  simulate();
+  layout();
+  buildWires();
+  buildGates();
+  buildLayers();
+  // 블로흐 구부터 측정값까지 전체 길이가 가로 시야에 들어오는 거리
+  const len = xEnd + 6 - (xStart - 6);
+  const hfov = 2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * camera.aspect);
+  const dist = (len / 2) / Math.tan(hfov / 2) + RING;
+  overviewView = {
+    target: new THREE.Vector3((xStart - 6 + xEnd + 6) / 2, 0, 0),
+    offset: new THREE.Vector3(-0.12, 0.38, 1).normalize().multiplyScalar(dist * 1.15),
+  };
   overview();
   cur.target.copy(goal.target);
   cur.sph.copy(goal.sph);

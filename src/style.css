@@ -25,11 +25,19 @@ input:focus { border-color: var(--accent); }
 
 /* --- 다이어그램: 블록 라벨 --- */
 .label { white-space: nowrap; pointer-events: none; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.7); transition: opacity 0.25s; }
-.label-chip { font-size: 13px; font-weight: 700; color: #fff; padding: 2px 8px; border-radius: 4px;
-  background: rgba(10, 18, 26, 0.8); border-bottom: 2px solid var(--chip, var(--accent)); transition: opacity 0.25s; }
-.label-chip.selected { background: var(--chip, var(--accent)); color: #04121e; }
-.label-chip.dim-chip { opacity: 0.3; }
-.label-tier { font-size: 12px; color: #8ff5c8; padding: 2px 8px; letter-spacing: 0.05em; }
+.label-qubit { font-size: 13px; font-weight: 700; color: #fff; padding: 2px 8px; border-radius: 4px;
+  background: rgba(10, 18, 26, 0.75); border-left: 3px solid var(--q, var(--accent)); }
+.label-qubit::after { content: attr(data-role); margin-left: 6px; font-size: 10px; font-weight: 400; color: var(--dim); }
+.label-gate { font-size: 11px; font-weight: 700; color: #04121e; text-shadow: none; }
+.label-layer { pointer-events: auto; cursor: pointer; font-size: 13px; color: var(--accent); padding: 3px 10px;
+  border: 1px solid var(--line); border-radius: 12px; background: rgba(4, 34, 58, 0.75); }
+.label-layer:hover { background: rgba(127, 231, 255, 0.2); }
+.label-readout { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #fff; padding: 3px 8px;
+  border-radius: 4px; background: rgba(10, 18, 26, 0.8); }
+.label-readout .bar { width: 70px; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, 0.15); overflow: hidden; }
+.label-readout .bar i { display: block; height: 100%; background: #fff1a8; transition: width 0.6s; }
+.label-readout.pending { opacity: 0.6; }
+.info .live { margin: 8px 0; font-size: 12px; white-space: pre-line; color: #fff1a8; font-family: ui-monospace, monospace; }
 
 .info { right: 16px; top: 60px; width: 280px; padding: 12px 14px; font-size: 13px; user-select: text; }
 .info .kind { font-size: 11px; color: var(--accent); margin-bottom: 2px; }
