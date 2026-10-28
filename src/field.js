@@ -93,6 +93,14 @@ const BOUND_DIRS = [
   ...[-1, 1].flatMap((x) => [-1, 1].flatMap((y) => [-1, 1].map((z) => [x, y, z].map((v) => v / Math.sqrt(3))))),
 ];
 
+// 하나의 코어: 핵(center)을 중심으로 모든 씨앗을 품는 26면 결정 외피. 영역들은 이 안을 빈틈없이 채운다.
+const CORE_DIRS = [-1, 0, 1].flatMap((x) => [-1, 0, 1].flatMap((y) => [-1, 0, 1].map((z) => [x, y, z])))
+  .filter((d) => d.some((v) => v)).map((d) => d.map((v) => v / Math.hypot(...d)));
+export function coreBounds(center, points, margin = 3) {
+  const radius = Math.max(...points.map((p) => Math.hypot(p[0] - center[0], p[1] - center[1], p[2] - center[2]))) + margin;
+  return CORE_DIRS.map((n) => ({ n, c: dot(n, center) + radius, j: -1 }));
+}
+
 export const outerBounds = (points) => BOUND_DIRS.map((n) => ({ n, c: Math.max(...points.map((p) => dot(n, p))) + MARGIN, j: -1 }));
 
 // 씨앗마다 개척한 영역(볼록 다면체) = 반공간의 교집합.
