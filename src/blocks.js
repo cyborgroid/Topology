@@ -240,5 +240,5 @@ export function sanitize(p) {
   const ids = new Set(blocks.map((b) => b.id));
   const wires = p.wires.filter((w) => w && ids.has(w.from?.block) && ids.has(w.to?.block)
     && findPort({ blocks }, w.from.block, w.from.port, 'outs') && findPort({ blocks }, w.to.block, w.to.port, 'ins'));
-  return { blocks, wires, ...(p.nobase ? { nobase: true } : {}), ...(Number.isFinite(p.dim) ? { dim: p.dim } : {}) };
+  return { blocks, wires, ...(p.nobase ? { nobase: true } : {}), ...(Number.isFinite(p.dim) ? { dim: p.dim } : {}), ...(p.form === 'math' || p.form === 'physical' ? { form: p.form } : {}) };
 }

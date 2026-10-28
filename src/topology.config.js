@@ -41,6 +41,8 @@ export const ANCHORS = [
 // 블록(영역)의 재료는 묶음(group)을 따른다. 접촉면은 패드, 떨어진 연결은 브리지(도체)로 잇는다.
 export const PHYSICAL = {
   unitMM: 10,   // 화면 1 = 10 mm
+  voxelMM: 20,  // 조립 규격 큐브 한 변 (mm) — 영역을 이 큐브로 쌓는다
+  padMM: 1,     // 구리 패드 두께 (mm)
   materials: {
     '환경':        { name: '실리콘', density: 2.33 },     // g/cm³
     '네트워크':    { name: '구리', density: 8.96 },

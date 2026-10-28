@@ -6,8 +6,9 @@
 // 계산한다(λ^D). 연결은 선이 아니라 두 영역이 맞닿는 접합면이 빛나는 것이다. 영역 중심에 양자 뉴런 핵과 단자가 있다.
 // 폴더와 파일도 양자 아날로그 뉴런 블록이다: 블록 영역 안에서 같은 차원 법칙으로 다시 영역을 개척한다(영역 안의 영역).
 // 영역 안은 블록의 신호만큼 양자 에너지 장이 찬다. 씨앗은 질량이어서(physics.js) 블록을 끌면 회로가 유기체처럼 따라온다.
-// 블록을 끌어 다른 블록에 맞대면 접촉면으로 결합(조립)된다. 조립한 결과가 곧 물리 설계도다 — 재료, 치수(mm), 질량,
-// 접촉 패드·브리지, 컨덕턴스, 지연 (Quantum Analog Neuron Core 설계의 바탕).
+// 블록을 끌어 다른 블록에 맞대면 접촉면으로 결합(조립)된다. 물리 형태(build.js)에서는 영역이 규격 큐브로 양자화되어
+// 손으로 쌓을 수 있다: 큐브 = 부품, 맞닿은 큐브 면 = 구리 패드, 커넥터 핀, 떨어진 연결 = 큐브 사이 배선(브리지).
+// 조립한 결과가 곧 Quantum Analog Neuron Core 의 물리 설계도다 — 층별 배치, 부품표, 치수(mm), 질량, 컨덕턴스, 지연.
 import * as THREE from 'three';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
@@ -16,6 +17,7 @@ import { CONTROLS, NODES, PHYSICAL } from './topology.config.js';
 import { BLOCK_TYPES, SIGNALS, createBlock, canConnect, connect, removeBlock, evaluate, emptyProgram, baseProgram, quantumNeuron } from './blocks.js';
 import { DIM_LIMIT, DEFAULT_DIM, ratio, toSlider, fromSlider, seeds, pathSeeds, voronoi, inset, inradius, energy, flowOrder } from './field.js';
 import { Physics } from './physics.js';
+import { voxelize, contacts, facesBetween, route, layers } from './build.js';
 
 const WATER = 0x04223a;
 const TERM_R = 0.17;
@@ -215,7 +217,13 @@ function computeRest() {
 // --- 물리 설계: 재료, 치수, 질량, 접촉 ----------------------------------------------------
 const CM = PHYSICAL.unitMM / 10;                     // 화면 1 = CM cm
 const materialOf = (b) => PHYSICAL.materials[BLOCK_TYPES[b.type].group] ?? { name: '—', density: 1 };
-const physicalMass = (b) => (cellInfo.get(b.id)?.volume ?? 0) * CM ** 3 * materialOf(b).density;   // g
+const CUBE_CM3 = () => (PHYSICAL.voxelMM / 10) ** 3;
+// 질량: 조립 큐브가 있으면 큐브 수 × 큐브 부피 × 밀도, 없으면 영역 부피 × 밀도 (g)
+const physicalMass = (b) => {
+  const k = blockIndex(b.id);
+  const cm3 = vox && k >= 0 && k < vox.counts.length ? vox.counts[k] * CUBE_CM3() : (cellInfo.get(b.id)?.volume ?? 0) * CM ** 3;
+  return cm3 * materialOf(b).density;
+};
 const blockIndex = (id) => program.blocks.findIndex((x) => x.id === id);
 // 두 블록이 맞닿은 면 (없으면 떨어져 있어 브리지가 필요)
 const contactFace = (w) => cellInfo.get(w.from.block)?.faces.find((f) => f.j === blockIndex(w.to.block));
@@ -389,8 +397,9 @@ function layoutCells(full) {
     }
   }
 
-  // 접합: 맞닿았으면 공유면 모양 그대로 패드, 떨어졌으면 두 영역 사이의 브리지(도체)
+  // 접합: 맞닿았으면 공유면 모양 그대로 패드, 떨어졌으면 두 영역 사이의 브리지(도체) (수학 형태에서만 보인다)
   for (const v of seamViews.values()) {
+    v.mesh.visible = !physicalForm();
     const a = views.get(v.from).group.position, b = views.get(v.to).group.position;
     v.curve.v1.copy(a);
     v.curve.v2.copy(b);
@@ -415,49 +424,204 @@ function layoutCells(full) {
     }
   }
   fillEnergy(cells);
+  buildVoxels();
+  renderVoxels();
   placeDesignMarks();
 }
 
-// --- 물리 설계도 ---------------------------------------------------------------------
-// 조립한 블록에서 바로 나온다: 블록 = 재료 덩어리(영역 다면체), 접합 = 접촉 패드 또는 브리지.
+// --- 조립용 물리 형태: 규격 큐브 ---------------------------------------------------------
+// 영역을 한 변 PHYSICAL.voxelMM 큐브로 양자화한다 (build.js). 설계도는 형태와 상관없이 늘 큐브 기준이다.
+const physicalForm = () => (program.form ?? 'physical') === 'physical';
+const VOX = () => PHYSICAL.voxelMM / PHYSICAL.unitMM;   // 큐브 한 변 (화면 단위)
+const MAX_VOX = 8000;
+const voxMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ roughness: 0.5, metalness: 0.15 }), MAX_VOX);
+const padMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ roughness: 0.3, metalness: 0.7, emissive: 0xffffff, emissiveIntensity: 0.15 }), MAX_VOX);
+voxMesh.count = padMesh.count = 0;
+voxMesh.frustumCulled = padMesh.frustumCulled = false;
+const parts = new THREE.Group();   // 커넥터 핀, 브리지 도선
+scene.add(voxMesh, padMesh, parts);
+const pickPins = [];
+let vox = null, voxLayers = [], voxOrder = [], joints = [];
+let buildStep = Infinity;          // 조립 단계: 이 층(0 부터)까지 보인다
+
+const signalOf = (w) => BLOCK_TYPES[program.blocks[blockIndex(w.from.block)].type].outs.find((p) => p.id === w.from.port).type;
+
+// 큐브, 층, 접합(패드 면·커넥터·배선 경로)을 계산한다
+function buildVoxels() {
+  if (!program.blocks.length || fieldBox.isEmpty()) { vox = null; voxLayers = []; voxOrder = []; joints = []; return; }
+  const seedsArr = program.blocks.map((b) => phys.pos(b.id));
+  vox = voxelize(seedsArr, VOX(), fieldBox);
+  voxLayers = layers(vox);
+  voxOrder = voxLayers.flatMap((l) => l.cells);
+  const faces = contacts(vox);
+  joints = program.wires.map((w) => {
+    const a = blockIndex(w.from.block), b = blockIndex(w.to.block);
+    const fs = facesBetween(faces, a, b);
+    if (!fs.length) return { wire: w, kind: 'bridge', path: route(vox, a, b) };
+    // 커넥터 핀: 두 씨앗의 가운데에 가장 가까운 패드 면
+    const mid = seedsArr[a].map((v, i) => (v + seedsArr[b][i]) / 2);
+    const pin = fs.reduce((best, f) => (Math.hypot(...f.c.map((v, i) => v - mid[i])) < Math.hypot(...best.c.map((v, i) => v - mid[i])) ? f : best));
+    return { wire: w, kind: 'pad', faces: fs, pin };
+  });
+}
+
+function renderVoxels() {
+  parts.children.forEach((o) => { o.geometry.dispose(); o.material.dispose(); });
+  parts.clear();
+  pickPins.length = 0;
+  const on = physicalForm() && !!vox;
+  voxMesh.visible = padMesh.visible = parts.visible = on;
+  if (!on) return;
+  const size = VOX(), m = new THREE.Matrix4(), col = new THREE.Color();
+  const tint = program.blocks.map((b) => {
+    const st = result.state.get(b.id);
+    return new THREE.Color(st?.status === 'error' ? 0xa83a3a : st?.status === 'ok' ? BLOCK_TYPES[b.type].color : 0x4a5866);
+  });
+  voxOrder.slice(0, MAX_VOX).forEach((n, k) => {
+    const cell = vox.cells[n];
+    voxMesh.setMatrixAt(k, m.makeScale(size * 0.94, size * 0.94, size * 0.94).setPosition(...cell.c));
+    voxMesh.setColorAt(k, tint[cell.owner]);
+  });
+  voxMesh.instanceMatrix.needsUpdate = true;
+  if (voxMesh.instanceColor) voxMesh.instanceColor.needsUpdate = true;
+
+  let pads = 0;
+  const seedsArr = program.blocks.map((b) => phys.pos(b.id));
+  for (const j of joints) {
+    const color = SIGNALS[signalOf(j.wire)].color;
+    const mat = () => new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.7, metalness: 0.6, roughness: 0.3 });
+    if (j.kind === 'pad') {
+      for (const f of j.faces) {   // 구리 패드: 큐브 면 위의 얇은 판
+        if (pads >= MAX_VOX) break;
+        const sc = [size * 0.8, size * 0.8, size * 0.8];
+        sc[f.axis] = size * 0.08;
+        padMesh.setMatrixAt(pads, m.makeScale(...sc).setPosition(...f.c));
+        padMesh.setColorAt(pads++, col.set(color));
+      }
+      const pin = new THREE.Mesh(new THREE.CylinderGeometry(size * 0.14, size * 0.14, size * 0.5, 12), mat());
+      pin.position.fromArray(j.pin.c);
+      if (j.pin.axis === 0) pin.rotation.z = Math.PI / 2;
+      if (j.pin.axis === 2) pin.rotation.x = Math.PI / 2;
+      pin.userData = { kind: 'wire', id: j.wire.id };
+      parts.add(pin);
+      pickPins.push(pin);
+    } else if (j.path) {   // 브리지 도선: 큐브 중심을 따라 가는 배선 (구조 속이라 비쳐 보인다)
+      const a = blockIndex(j.wire.from.block), b = blockIndex(j.wire.to.block);
+      const pts = [seedsArr[a], ...j.path.map((n) => vox.cells[n].c), seedsArr[b]].map((q) => new THREE.Vector3(...q));
+      const curve = new THREE.CurvePath();
+      for (let i = 1; i < pts.length; i++) curve.add(new THREE.LineCurve3(pts[i - 1], pts[i]));
+      const wireMat = mat();
+      Object.assign(wireMat, { transparent: true, opacity: 0.85, depthTest: false });
+      const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, pts.length * 4, size * 0.07, 6, false), wireMat);
+      tube.renderOrder = 1;
+      tube.userData = { kind: 'wire', id: j.wire.id };
+      parts.add(tube);
+      pickPins.push(tube);
+    }
+  }
+  padMesh.count = pads;
+  padMesh.instanceMatrix.needsUpdate = true;
+  if (padMesh.instanceColor) padMesh.instanceColor.needsUpdate = true;
+  applyBuildStep();
+}
+
+// 조립 단계: 아래층부터 k 층까지만 보인다. 다 쌓기 전에는 패드·핀·배선을 숨긴다.
+function applyBuildStep() {
+  const upto = Math.min(buildStep, voxLayers.length - 1);
+  voxMesh.count = Math.min(MAX_VOX, voxLayers.slice(0, upto + 1).reduce((a, l) => a + l.cells.length, 0));
+  const done = upto >= voxLayers.length - 1;
+  padMesh.visible = parts.visible = physicalForm() && !!vox && done;
+}
+
+// 수학 형태(영역·에너지 장·핵) ↔ 물리 형태(조립 큐브)
+function applyForm() {
+  const phy = physicalForm();
+  for (const v of views.values()) {
+    v.body.visible = !phy;
+    v.core.visible = !phy;
+    v.terms.forEach((t) => { t.visible = !phy; });
+  }
+  energyField.visible = !phy;
+}
+
+function toggleForm() {
+  program.form = physicalForm() ? 'math' : 'physical';
+  hooks.save(program);
+  refresh(false);
+  buildPalette();
+}
+
+// --- 물리 설계도: 조립 큐브 기준 ------------------------------------------------------
 const C_LIGHT = 299792458;
+function voxBox() {
+  const box = new THREE.Box3();
+  if (!vox) return box.copy(fieldBox);
+  const half = new THREE.Vector3().setScalar(vox.size / 2);
+  for (const c of vox.cells) {
+    const p = new THREE.Vector3(...c.c);
+    box.expandByPoint(p.clone().sub(half)).expandByPoint(p.add(half));
+  }
+  return box;
+}
+
 function designSheet() {
-  const u = PHYSICAL.unitMM;
-  const mm = (p) => p.map((v) => Math.round(v * u * 100) / 100);
-  const blocks = program.blocks.map((b) => {
-    const c = cellInfo.get(b.id), mat = materialOf(b);
+  const u = PHYSICAL.unitMM, cube = PHYSICAL.voxelMM;
+  const mm = (p) => p.map((v) => Math.round(v * u * 10) / 10);
+  const name = (id) => program.blocks[blockIndex(id)]?.name;
+  const blocks = program.blocks.map((b, k) => {
+    const mat = materialOf(b);
     return {
       id: b.id, type: b.type, name: b.name, material: mat.name, density_g_cm3: mat.density,
-      seed_mm: mm(phys.pos(b.id)),
-      volume_cm3: c.volume * CM ** 3, surface_cm2: c.area * CM ** 2, mass_g: physicalMass(b),
-      faces: c.faces.map((f) => ({ neighbor: f.j >= 0 ? program.blocks[f.j].id : null, area_mm2: f.area * u * u, normal: f.normal })),
-      vertices_mm: c.verts.map(mm),
+      cubes: vox.counts[k], volume_cm3: vox.counts[k] * CUBE_CM3(), mass_g: physicalMass(b), seed_mm: mm(phys.pos(b.id)),
     };
   });
-  const contacts = program.wires.map((w) => {
-    const face = contactFace(w);
-    const type = BLOCK_TYPES[program.blocks[blockIndex(w.from.block)].type].outs.find((p) => p.id === w.from.port).type;
-    const pa = phys.pos(w.from.block), pb = phys.pos(w.to.block);
-    const dist = Math.hypot(pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]) * u;   // mm
-    const part = face ? PHYSICAL.pad : PHYSICAL.bridge;
-    const lengthMM = face ? dist * PHYSICAL.gap : dist;                         // 패드 두께 = 틈, 브리지 길이 = 씨앗 거리
-    const areaMM2 = face ? face.area * u * u : PHYSICAL.bridge.sectionMM2;
+  const contactsOut = joints.map((j) => {
+    const base = { from: j.wire.from, to: j.wire.to, from_name: name(j.wire.from.block), to_name: name(j.wire.to.block), signal: SIGNALS[signalOf(j.wire)].label };
+    if (j.kind === 'pad') {
+      const area = j.faces.length * cube * cube, len = PHYSICAL.padMM;
+      return {
+        ...base, kind: 'pad', material: PHYSICAL.pad.name, pad_faces: j.faces.length, area_mm2: area, length_mm: len,
+        connector: { at_mm: mm(j.pin.c), axis: 'xyz'[j.pin.axis] },
+        conductance_S: (PHYSICAL.pad.conductivity * area * 1e-6) / (len * 1e-3),
+        delay_ps: (len * 1e-3) / (PHYSICAL.signalSpeed * C_LIGHT) * 1e12,
+      };
+    }
+    const len = j.path ? (j.path.length + 1) * cube : null;
+    const through = j.path ? [...new Set(j.path.map((n) => name(program.blocks[vox.cells[n].owner].id)))] : [];
     return {
-      from: w.from, to: w.to, signal: SIGNALS[type].label, kind: face ? 'pad' : 'bridge', material: part.name,
-      area_mm2: areaMM2, length_mm: lengthMM,
-      conductance_S: (part.conductivity * areaMM2 * 1e-6) / (lengthMM * 1e-3),
-      delay_ps: (lengthMM * 1e-3) / (PHYSICAL.signalSpeed * C_LIGHT) * 1e12,
+      ...base, kind: 'bridge', material: PHYSICAL.bridge.name, length_mm: len, through,
+      route_cells: j.path?.map((n) => vox.cells[n].i) ?? null,
+      conductance_S: len ? (PHYSICAL.bridge.conductivity * PHYSICAL.bridge.sectionMM2 * 1e-6) / (len * 1e-3) : null,
+      delay_ps: len ? (len * 1e-3) / (PHYSICAL.signalSpeed * C_LIGHT) * 1e12 : null,
     };
   });
+  const box = voxBox(), size = box.getSize(new THREE.Vector3()).multiplyScalar(u);
   const total = blocks.reduce((a, b) => a + b.mass_g, 0);
-  const com = [0, 1, 2].map((i) => blocks.reduce((a, b) => a + b.seed_mm[i] * b.mass_g, 0) / (total || 1));
-  const size = fieldBox.getSize(new THREE.Vector3()).multiplyScalar(u);
+  const com = [0, 1, 2].map((i) => vox.cells.reduce((a, c) => a + c.c[i] * u * materialOf(program.blocks[c.owner]).density, 0)
+    / (vox.cells.reduce((a, c) => a + materialOf(program.blocks[c.owner]).density, 0) || 1));
+  const bom = {};
+  for (const b of blocks) {
+    const k = `${b.material} 큐브 ${cube} mm`;
+    bom[k] = (bom[k] ?? 0) + b.cubes;
+  }
+  const pads = contactsOut.filter((c) => c.kind === 'pad');
+  const bridges = contactsOut.filter((c) => c.kind === 'bridge');
+  bom[`${PHYSICAL.pad.name} (큐브 면)`] = pads.reduce((a, c) => a + c.pad_faces, 0);
+  bom['커넥터 핀'] = pads.length;
+  if (bridges.length) bom[`${PHYSICAL.bridge.name} ${PHYSICAL.bridge.sectionMM2} mm² (mm)`] = bridges.reduce((a, c) => a + (c.length_mm ?? 0), 0);
+  const lo = vox.cells.reduce((a, c) => a.map((v, i) => Math.min(v, c.i[i])), [Infinity, Infinity, Infinity]);
   return {
-    name: 'Quantum Analog Neuron Core', created: new Date().toISOString(), unit: 'mm', dimension: dim(),
+    name: 'Quantum Analog Neuron Core', version: 2, created: new Date().toISOString(), unit: 'mm', dimension: dim(),
     assumptions: PHYSICAL,
+    cube_mm: cube, cube_count: vox.cells.length, layer_count: voxLayers.length,
     envelope_mm: { w: size.x, h: size.y, d: size.z },
     total_volume_cm3: blocks.reduce((a, b) => a + b.volume_cm3, 0), total_mass_g: total, center_of_mass_mm: com,
-    blocks, contacts,
+    bom, blocks, contacts: contactsOut,
+    // 조립 순서: 아래층부터. 격자 좌표는 가장 낮은 큐브를 (0,0,0) 으로
+    layers: voxLayers.map((l, k) => ({
+      layer: k + 1,
+      cubes: l.cells.map((n) => ({ x: vox.cells[n].i[0] - lo[0], z: vox.cells[n].i[2] - lo[2], block: name(program.blocks[vox.cells[n].owner].id) })),
+    })),
   };
 }
 
@@ -465,7 +629,8 @@ function designSheet() {
 let designOpen = false;
 const envelope = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)), new THREE.LineDashedMaterial({ color: 0xfff1a8, dashSize: 0.04, gapSize: 0.03, transparent: true, opacity: 0.7 }));
 envelope.computeLineDistances();
-const comMark = new THREE.Mesh(new THREE.OctahedronGeometry(0.45), new THREE.MeshBasicMaterial({ color: 0xfff1a8, wireframe: true }));
+const comMark = new THREE.Mesh(new THREE.OctahedronGeometry(0.45), new THREE.MeshBasicMaterial({ color: 0xfff1a8, wireframe: true, depthTest: false }));
+comMark.renderOrder = 2;
 const dimLabels = ['w', 'h', 'd', 'com'].map((k) => {
   const el = document.createElement('div');
   el.className = 'label label-dim';
@@ -476,44 +641,58 @@ const dimLabels = ['w', 'h', 'd', 'com'].map((k) => {
 scene.add(envelope, comMark);
 
 function placeDesignMarks() {
-  const show = designOpen && isActive(view) && !fieldBox.isEmpty();
+  const show = designOpen && isActive(view) && !!vox;
   envelope.visible = comMark.visible = show;
   dimLabels.forEach((l) => { l.o.visible = show; });
   if (!show) return;
-  const c = fieldBox.getCenter(new THREE.Vector3()), sz = fieldBox.getSize(new THREE.Vector3());
+  const box = voxBox(), c = box.getCenter(new THREE.Vector3()), sz = box.getSize(new THREE.Vector3());
   envelope.position.copy(c);
   envelope.scale.copy(sz);
-  const u = PHYSICAL.unitMM, { max } = fieldBox;
+  const u = PHYSICAL.unitMM, { max } = box;
   const at = { w: [c.x, max.y, max.z], h: [max.x, c.y, max.z], d: [max.x, max.y, c.z] };
   for (const l of dimLabels) {
     if (l.k === 'com') continue;
     l.o.position.fromArray(at[l.k]);
     l.el.textContent = `${l.k.toUpperCase()} ${(sz[{ w: 'x', h: 'y', d: 'z' }[l.k]] * u).toFixed(0)} mm`;
   }
-  let m = 0;
-  const com = new THREE.Vector3();
-  for (const b of program.blocks) {
-    const g = physicalMass(b);
-    com.addScaledVector(new THREE.Vector3().fromArray(phys.pos(b.id)), g);
-    m += g;
-  }
-  com.divideScalar(m || 1);
-  comMark.position.copy(com);
+  const com = designSheet().center_of_mass_mm.map((v) => v / u);
+  comMark.position.fromArray(com);
   const lc = dimLabels.find((l) => l.k === 'com');
-  lc.o.position.copy(com);
+  lc.o.position.fromArray(com);
   lc.el.textContent = '무게중심';
 }
 
-const fmt = (v, d = 1) => (Math.abs(v) >= 1e4 || (Math.abs(v) < 1e-2 && v !== 0) ? v.toExponential(2) : v.toFixed(d));
+const fmt = (v, d = 1) => (v === null ? '—' : Math.abs(v) >= 1e4 || (Math.abs(v) < 1e-2 && v !== 0) ? v.toExponential(2) : v.toFixed(d));
+const hexCol = (c) => `#${c.toString(16).padStart(6, '0')}`;
+
+// 층 배치도: 위에서 내려다본 한 층. 칸 = 큐브, 색 = 블록
+function layerMap(d, layer, on) {
+  const all = d.layers.flatMap((l) => l.cubes);
+  const W = Math.max(...all.map((c) => c.x)) + 1, Hh = Math.max(...all.map((c) => c.z)) + 1, s = 9;
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', `0 0 ${W * s} ${Hh * s}`);
+  svg.setAttribute('width', W * s);
+  svg.setAttribute('height', Hh * s);
+  for (const c of layer.cubes) {
+    const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    Object.entries({ x: c.x * s, y: c.z * s, width: s - 1, height: s - 1, fill: hexCol(BLOCK_TYPES[program.blocks.find((b) => b.name === c.block)?.type ?? 'data'].color) })
+      .forEach(([k, v]) => r.setAttribute(k, v));
+    const t = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+    t.textContent = c.block;
+    r.append(t);
+    svg.append(r);
+  }
+  const fig = h('figure', { className: `layer-map${on ? ' on' : ''}` }, svg, h('figcaption', { textContent: `${layer.layer}층 · ${layer.cubes.length}` }));
+  return fig;
+}
+
 function renderDesign() {
   designEl.hidden = !designOpen || !isActive(view);
   placeDesignMarks();
-  if (designEl.hidden || !program.blocks.length || !cellInfo.size) return;
+  if (designEl.hidden || !vox) return;
   const d = designSheet();
-  const name = (ref) => program.blocks[blockIndex(ref.block)]?.name;
   const table = (head, rows) => h('table', {}, h('tr', {}, ...head.map((t) => h('th', { textContent: t }))),
     ...rows.map((r) => h('tr', {}, ...r.map((t) => h('td', { textContent: t })))));
-  const pads = d.contacts.filter((c) => c.kind === 'pad').length;
   const save = h('button', { textContent: '💾 설계도 저장 (JSON)' });
   const where = h('div', { className: 'dim' });
   save.addEventListener('click', async () => {
@@ -522,19 +701,47 @@ function renderDesign() {
   });
   const close = h('button', { textContent: '✕' });
   close.addEventListener('click', () => toggleDesign(false));
+
+  // 조립 단계: 슬라이더로 아래층부터 쌓아 본다
+  const L = d.layers.length;
+  const step = Math.min(buildStep, L - 1);
+  const stepInput = h('input', { type: 'range', min: 1, max: L, step: 1, value: step + 1 });
+  const stepText = h('div', { className: 'live' });
+  const maps = h('div', { className: 'layer-maps' });
+  const showStep = () => {
+    const k = Number(stepInput.value) - 1;
+    buildStep = k >= L - 1 ? Infinity : k;
+    applyBuildStep();
+    const count = {};
+    d.layers[k].cubes.forEach((c) => { count[c.block] = (count[c.block] ?? 0) + 1; });
+    stepText.textContent = `${k + 1} / ${L}층 쌓기: ${Object.entries(count).map(([n, c]) => `${n} ×${c}`).join(', ')}`
+      + (k === L - 1 ? '\n다 쌓은 뒤 커넥터 핀을 꽂고 브리지 도선을 잇는다' : '');
+    maps.replaceChildren(...d.layers.map((l, i) => layerMap(d, l, i === k)));
+  };
+  stepInput.addEventListener('input', showStep);
+  showStep();
+
+  const pads = d.contacts.filter((c) => c.kind === 'pad').length;
   designEl.replaceChildren(
-    h('div', { className: 'design-head' }, h('strong', { textContent: 'Quantum Analog Neuron Core — 물리 설계' }), close),
-    h('div', { className: 'dim', textContent: '블록을 조립한 그대로의 설계. 재료·단위는 topology.config.js 의 PHYSICAL 가정값.' }),
+    h('div', { className: 'design-head' }, h('strong', { textContent: 'Quantum Analog Neuron Core — 조립 설계' }), close),
+    h('div', { className: 'dim', textContent: `영역을 ${d.cube_mm} mm 규격 큐브로 쌓는다. 재료·치수 가정값은 topology.config.js 의 PHYSICAL.` }),
     h('div', { className: 'live', textContent: [
-      `외곽 W ${fmt(d.envelope_mm.w, 0)} × H ${fmt(d.envelope_mm.h, 0)} × D ${fmt(d.envelope_mm.d, 0)} mm · 차원 D = ${fmtD(d.dimension)}`,
+      `큐브 ${d.cube_count}개 · ${L}층 · 외곽 W ${fmt(d.envelope_mm.w, 0)} × H ${fmt(d.envelope_mm.h, 0)} × D ${fmt(d.envelope_mm.d, 0)} mm`,
       `부피 ${fmt(d.total_volume_cm3)} cm³ · 질량 ${fmt(d.total_mass_g)} g · 무게중심 (${d.center_of_mass_mm.map((v) => v.toFixed(0)).join(', ')}) mm`,
-      `접합 ${d.contacts.length}: 접촉 패드 ${pads} · 브리지 ${d.contacts.length - pads}${d.contacts.length - pads ? ' (맞대어 조립하면 패드가 된다)' : ''}`,
+      `접합 ${d.contacts.length}: 패드 ${pads} · 브리지 ${d.contacts.length - pads}${d.contacts.length - pads ? ' (맞대어 조립하면 패드가 된다)' : ''}`,
     ].join('\n') }),
-    h('div', { className: 'dim', textContent: '블록 (영역 = 재료 덩어리)' }),
-    table(['블록', '재료', '부피 cm³', '질량 g', '이웃 면'], d.blocks.map((b) => [b.name, b.material, fmt(b.volume_cm3), fmt(b.mass_g), String(b.faces.filter((f) => f.neighbor).length)])),
-    h('div', { className: 'dim', textContent: '접합 (신호가 지나는 물리 경로)' }),
-    table(['연결', '신호', '방식', '면적 mm²', '길이 mm', 'G (S)', '지연 ps'], d.contacts.map((c) => [
-      `${name(c.from)} → ${name(c.to)}`, c.signal, c.kind === 'pad' ? '패드' : '브리지', fmt(c.area_mm2, 0), fmt(c.length_mm), fmt(c.conductance_S, 0), fmt(c.delay_ps)])),
+    h('div', { className: 'dim', textContent: '부품표' }),
+    table(['부품', '수량'], Object.entries(d.bom).map(([k, v]) => [k, fmt(v, 0)])),
+    h('div', { className: 'dim', textContent: '조립 단계 (아래층부터)' }),
+    stepInput, stepText, maps,
+    h('div', { className: 'dim', textContent: '블록' }),
+    table(['블록', '재료', '큐브', '부피 cm³', '질량 g'], d.blocks.map((b) => [b.name, b.material, String(b.cubes), fmt(b.volume_cm3), fmt(b.mass_g)])),
+    h('div', { className: 'dim', textContent: '접합 (커넥터 위치 mm · 브리지 경로)' }),
+    table(['연결', '신호', '방식', '패드 면 / 길이', '커넥터·경유', 'G (S)', '지연 ps'], d.contacts.map((c) => [
+      `${c.from_name} → ${c.to_name}`, c.signal, c.kind === 'pad' ? '패드' : '브리지',
+      c.kind === 'pad' ? `${c.pad_faces}면` : `${fmt(c.length_mm, 0)} mm`,
+      c.kind === 'pad' ? `(${c.connector.at_mm.map((v) => v.toFixed(0)).join(', ')}) ${c.connector.axis}` : c.through.join('·'),
+      fmt(c.conductance_S, 0), fmt(c.delay_ps)])),
     h('div', { className: 'actions' }, save),
     where,
   );
@@ -618,6 +825,7 @@ function refresh(save = true) {
   result = evaluate(program, env);
   computeRest();
   ensureRoots();
+  applyForm();
   layoutCells(true);
   if (save) delete program.nobase;   // 손대면 더 이상 초기 상태가 아니다
 
@@ -632,7 +840,7 @@ function refresh(save = true) {
     v.core.material.color.copy(v.body.material.color);
     v.core.material.emissiveIntensity = st.status === 'ok' ? 0.2 + st.value * 0.9 : 0.05;
     if (v.bloch) {
-      v.bloch.holder.visible = !!st.bloch;
+      v.bloch.holder.visible = !!st.bloch && !physicalForm();
       if (st.bloch) {
         const d = new THREE.Vector3(st.bloch[0], st.bloch[2], st.bloch[1]);   // 블로흐 z → 위
         const len = d.length() * 0.45;
@@ -702,7 +910,7 @@ function buildPalette() {
   const clear = h('button', { className: 'clear', textContent: '↺ 초기 구조로 (No Base)' });
   clear.addEventListener('click', () => {
     if (!program.nobase && confirm('지금 조립을 지우고 Topology 초기 시스템 구조(No Base)로 돌아갈까요?')) {
-      program = { ...baseProgram({ path: hooks.dataPlaces()[0]?.path }), dim: dim() };
+      program = { ...baseProgram({ path: hooks.dataPlaces()[0]?.path }), dim: dim(), form: program.form };
       select(null);
       refresh(false);
       hooks.save(program);
@@ -710,13 +918,16 @@ function buildPalette() {
       overview();
     }
   });
-  const design = h('button', { className: 'clear', textContent: '⚙ 물리 설계도 (Neuron Core)' });
+  const design = h('button', { className: 'clear', textContent: '⚙ 조립 설계도 (Neuron Core)' });
   design.addEventListener('click', () => toggleDesign());
+  const form = h('button', { className: 'clear', textContent: physicalForm() ? '◧ 형태: 물리 (조립 큐브) → 수학' : '◇ 형태: 수학 (영역) → 물리' });
+  form.addEventListener('click', () => toggleForm());
   paletteEl.replaceChildren(
     h('div', { className: 'palette-title', textContent: '양자 뉴런 블록' }),
     h('div', { className: 'palette-sub', textContent: '기능 모듈을 꺼내면 자기 영역을 개척해 블록이 됩니다. 같은 색 단자끼리 이으세요' }),
     ...sections,
     h('div', { className: 'palette-status' }),
+    form,
     design,
     clear,
   );
@@ -930,7 +1141,7 @@ function boardPoint(e, y = 0) {
   return ray(e).ray.intersectPlane(y ? new THREE.Plane(BOARD.normal, -y) : BOARD, new THREE.Vector3());
 }
 function pickAt(e, list) {
-  return ray(e).intersectObjects(list, false)[0]?.object.userData ?? null;
+  return ray(e).intersectObjects(list.filter((o) => o.visible), false)[0]?.object.userData ?? null;
 }
 
 let drag = null;
@@ -965,7 +1176,7 @@ canvas.addEventListener('pointerdown', (e) => {
   const node = pickAt(e, focusedNodes());
   if (node) { drag = { mode: 'orbit', moved: 0, node: node.key }; return; }
   // (블록을 끌어 다른 블록에 맞대면 결합한다 — pointerup 의 dockOptions)
-  const body = !e.shiftKey && pickAt(e, pickBodies);
+  const body = !e.shiftKey && pickBlock(e);
   if (body) {
     const at = new THREE.Vector3().fromArray(phys.pos(body.id));
     const normal = camera.getWorldDirection(new THREE.Vector3());
@@ -974,6 +1185,13 @@ canvas.addEventListener('pointerdown', (e) => {
   }
   drag = { mode: 'orbit', moved: 0 };
 });
+
+// 블록 집기: 물리 형태에서는 큐브를 집으면 그 큐브가 속한 블록
+function pickBlock(e) {
+  if (!physicalForm()) return pickAt(e, pickBodies);
+  const hit = vox && ray(e).intersectObject(voxMesh, false)[0];
+  return hit ? { kind: 'block', id: program.blocks[vox.cells[voxOrder[hit.instanceId]].owner].id } : null;
+}
 
 // 블록을 고르면 그 영역 안의 폴더·파일 블록을 먼저 집는다 (영역 안으로 들어가기)
 function focusedNodes() {
@@ -985,7 +1203,7 @@ canvas.addEventListener('pointermove', (e) => {
   if (!isActive(view)) return;
   if (!drag) {
     const t = pickAt(e, pickTerms);
-    const b = !t && (pickAt(e, focusedNodes()) || (!e.shiftKey && pickAt(e, pickBodies)));
+    const b = !t && (pickAt(e, focusedNodes()) || (!e.shiftKey && pickBlock(e)));
     canvas.style.cursor = t ? 'crosshair' : b ? (b.kind === 'node' ? 'pointer' : 'move') : 'grab';
     return;
   }
@@ -1043,7 +1261,7 @@ canvas.addEventListener('pointerup', (e) => {
     refresh();
     if (docked.length) select({ kind: 'block', id: d.id });
   } else if (d.mode === 'orbit' && d.moved < 4) {
-    const w = pickAt(e, pickWires);
+    const w = pickAt(e, [...pickWires, ...pickPins]);
     select(d.node ? { kind: 'node', key: d.node } : w ? { kind: 'wire', id: w.id } : null);
   }
 });
@@ -1057,7 +1275,7 @@ canvas.addEventListener('dblclick', (e) => {
     else hooks.openFile(n.path);
     return;
   }
-  const body = pickAt(e, pickBodies);
+  const body = pickBlock(e);
   if (body) {
     goal.target.copy(views.get(body.id).group.position);
     goal.sph.radius = 10;
@@ -1113,7 +1331,7 @@ function update(dt, t) {
   const focus = selected?.kind === 'block' ? selected.id : selected?.kind === 'node' ? nodes.get(selected.key)?.owner : null;
   for (const [id, v] of views) v.body.material.opacity = focus === id && roots.get(id)?.length ? 0.14 : 0.42;
   for (const n of nodes.values()) {
-    n.view.body.visible = !!n.local && (views.get(n.owner)?.grow ?? 1) >= 1;
+    n.view.body.visible = !!n.local && (views.get(n.owner)?.grow ?? 1) >= 1 && !physicalForm();
     n.view.el.hidden = n.owner !== focus;
     n.view.el.classList.toggle('selected', selected?.kind === 'node' && selected.key === n.key);
   }
@@ -1173,7 +1391,7 @@ export function focusType(type) {
 export function build(saved, initialEnv) {
   // 손대지 않은 No Base 는 지금의 초기 구조로 다시 만든다
   program = saved.blocks.length && !saved.nobase ? saved
-    : { ...baseProgram({ path: hooks.dataPlaces()[0]?.path }), ...(saved.dim !== undefined ? { dim: saved.dim } : {}) };
+    : { ...baseProgram({ path: hooks.dataPlaces()[0]?.path }), ...(saved.dim !== undefined ? { dim: saved.dim } : {}), ...(saved.form ? { form: saved.form } : {}) };
   env = initialEnv;
   buildPalette();
   buildDimension();
