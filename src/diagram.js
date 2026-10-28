@@ -1,14 +1,16 @@
 // 다이어그램 뷰: Quantum Neuron Block Computing 의 3D 조립판.
 // No Base(초기 상태) = Topology 자체의 시스템 구조가 조립된 판. 여기서 블록을 꺼내 놓거나 단자를 다시 이어 시스템을 키운다.
 // 조립이 바뀌거나 환경 값이 바뀔 때마다 시스템 전체를 계산해(blocks.js) 블록마다 양자 뉴런의 상태를 보여 준다.
-// 시스템은 하나의 결정체로 조립된다: 블록 = 육각기둥 결정 셀. 셀은 고른 차원(4D~0D)의 격자에 면을 맞대고 맞물리고(crystal.js),
-// 연결은 선이 아니라 셀 사이 접합면이 신호 색으로 빛나는 것으로 보인다. 단자는 셀 윗면의 돌기다.
+// 시스템은 하나의 양자장으로 완성된다(field.js): 프랙탈 차원 D(0~4, 볼륨처럼 연속)가 장의 모양을 정하고,
+// 블록을 씨앗으로 한 보로노이 다이어그램이 장을 블록들의 결정 셀로 나눈다. 연결은 선이 아니라 셀 사이 접합면이 빛나는 것이다.
+// 블록 중심에는 양자 뉴런(핵과 블로흐 구)과 단자가 있다.
 import * as THREE from 'three';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 import { canvas, registerView, isActive, isTyping, isUi, onViewChange } from './core.js';
 import { CONTROLS, NODES } from './topology.config.js';
 import { BLOCK_TYPES, SIGNALS, createBlock, canConnect, connect, removeBlock, evaluate, emptyProgram, baseProgram } from './blocks.js';
-import { CELL_R, CELL_H, DIMENSIONS, DEFAULT_DIM, layout, project } from './crystal.js';
+import { DIM_MIN, DIM_MAX, DEFAULT_DIM, ratio, seeds, quanta, voronoi } from './field.js';
 
 const WATER = 0x04223a;
 const TERM_R = 0.17;
@@ -53,33 +55,29 @@ let program = emptyProgram();
 let env = {};
 let result = { state: new Map(), live: new Set(), system: null };
 
-// 시스템 전체의 차원 사양. 블록마다가 아니라 결정 하나에 적용된다.
+// 시스템 전체의 프랙탈 차원 D. 블록마다가 아니라 장 하나에 적용된다.
 const dim = () => program.dim ?? DEFAULT_DIM;
-let sites = new Map();   // blockId -> 격자점 [x, y, z, w]
-let hyperAngle = 0;      // 4D: xw 평면 회전 (천천히 흔들린다)
 
-// --- 블록 그리기: 육각기둥 결정 셀 ---------------------------------------------------
-// 꼭짓점이 +z, 평평한 면이 ±x 를 향한다(crystal.js 의 벌집 격자와 맞물리게). 셀 사이에 얇은 틈을 둔다.
-const cellGeo = new THREE.CylinderGeometry(CELL_R * 0.97, CELL_R * 0.97, CELL_H * 0.96, 6);
-const cellEdges = new THREE.EdgesGeometry(cellGeo);
+// --- 블록 그리기: 보로노이 셀 + 중심의 양자 뉴런 핵 -----------------------------------------
+const coreGeo = new THREE.IcosahedronGeometry(0.42, 0);
 const termGeo = new THREE.SphereGeometry(TERM_R, 16, 12);
 
-const views = new Map();   // blockId -> { group, body, terms, el, bloch }
+const views = new Map();   // blockId -> { group, core, body(셀), edges, terms, el, bloch }
 const pickBodies = [];
 const pickTerms = [];
 
-// 단자 = 윗면의 돌기. 입력은 왼쪽, 출력은 오른쪽 줄
+// 단자 = 핵 둘레의 돌기. 입력은 왼쪽, 출력은 오른쪽
 function portOffset(def, side, portId) {
   const list = def[side];
   const i = list.findIndex((p) => p.id === portId);
-  const z = list.length === 1 ? 0 : (i - (list.length - 1) / 2) * 0.5;
-  return new THREE.Vector3(side === 'ins' ? -CELL_R * 0.5 : CELL_R * 0.5, CELL_H / 2 + 0.04, z);
+  const z = list.length === 1 ? 0 : (i - (list.length - 1) / 2) * 0.45;
+  return new THREE.Vector3(side === 'ins' ? -0.95 : 0.95, 0, z);
 }
 
-// 양자 뉴런은 셀 안에 들어 있다: 투명한 결정 속 블로흐 구
 function makeBloch(group) {
   const holder = new THREE.Group();
-  holder.add(new THREE.Mesh(new THREE.SphereGeometry(0.4, 16, 10), new THREE.MeshBasicMaterial({ color: 0x9fe8ff, wireframe: true, transparent: true, opacity: 0.3 })));
+  holder.scale.setScalar(1.6);
+  holder.add(new THREE.Mesh(new THREE.SphereGeometry(0.45, 16, 10), new THREE.MeshBasicMaterial({ color: 0x9fe8ff, wireframe: true, transparent: true, opacity: 0.22 })));
   const arrow = new THREE.Group();
   const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1, 6).translate(0, 0.5, 0), new THREE.MeshBasicMaterial({ color: 0xffffff }));
   const head = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.16, 10), new THREE.MeshBasicMaterial({ color: 0xfff1a8 }));
@@ -92,12 +90,17 @@ function makeBloch(group) {
 function buildBlockView(b) {
   const def = BLOCK_TYPES[b.type];
   const group = new THREE.Group();
-  const body = new THREE.Mesh(cellGeo, new THREE.MeshPhysicalMaterial({
-    color: def.color, emissive: def.color, emissiveIntensity: 0.15, roughness: 0.15, clearcoat: 1,
-    transparent: true, opacity: 0.68, flatShading: true,
+  const core = new THREE.Mesh(coreGeo, new THREE.MeshStandardMaterial({ color: def.color, emissive: def.color, emissiveIntensity: 0.3, flatShading: true }));
+  group.add(core);
+
+  // 보로노이 셀: 반투명 결정 면 + 모서리 (모양은 shapeField 가 채운다)
+  const body = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshPhysicalMaterial({
+    color: def.color, emissive: def.color, emissiveIntensity: 0.15, roughness: 0.2, clearcoat: 1,
+    transparent: true, opacity: 0.13, depthWrite: false, side: THREE.DoubleSide,
   }));
   body.userData = { kind: 'block', id: b.id };
-  group.add(body, new THREE.LineSegments(cellEdges, new THREE.LineBasicMaterial({ color: 0xe8fbff, transparent: true, opacity: 0.55 })));
+  const edges = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: def.color, transparent: true, opacity: 0.7 }));
+  scene.add(body, edges);
   pickBodies.push(body);
 
   const terms = [];
@@ -117,24 +120,45 @@ function buildBlockView(b) {
   el.className = 'label label-block';
   el.innerHTML = '<span class="name"></span><span class="out"></span>';
   const label = new CSS2DObject(el);
-  label.position.set(0, -CELL_H / 2, CELL_R * 0.6);
+  label.position.set(0, -0.85, 0);
   label.center.set(0.5, 0);
   group.add(label);
 
   scene.add(group);
-  return { group, body, terms, el, bloch: def.neuron ? makeBloch(group) : null };
+  return { group, core, body, edges, terms, el, bloch: def.neuron ? makeBloch(group) : null };
 }
 
 function disposeView(v) {
-  scene.remove(v.group);
+  scene.remove(v.group, v.body, v.edges);
   v.group.traverse((o) => { if (o.element) o.element.remove(); });
   pickBodies.splice(pickBodies.indexOf(v.body), 1);
   v.terms.forEach((t) => pickTerms.splice(pickTerms.indexOf(t), 1));
-  v.body.material.dispose();
+  for (const m of [v.body, v.edges]) { m.geometry.dispose(); m.material.dispose(); }
+  v.core.material.dispose();
 }
 
-// --- 접합면: 연결된 두 셀 사이에서 빛나는 판 -------------------------------------------
-// 이웃한 셀이면 맞닿은 면 위에, 떨어져 있으면 결정 속 두 셀 사이에 놓인다. 신호는 결정 속을 빛으로 지나간다.
+// --- 양자장: 프랙탈 끌개 위의 양자. 가장 가까운 블록의 셀에 속해 그 블록의 색과 신호로 빛난다 ------------
+const QUANTA = 9000;
+const quantaGeo = new THREE.BufferGeometry();
+quantaGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(QUANTA * 3), 3));
+quantaGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(QUANTA * 3), 3));
+const field = new THREE.Points(quantaGeo, new THREE.PointsMaterial({ size: 0.2, vertexColors: true, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false }));
+field.frustumCulled = false;
+scene.add(field);
+let owners = new Int32Array(QUANTA);   // 양자 -> program.blocks 의 번호 (-1 = 블록 없음)
+
+function paintQuanta() {
+  const col = quantaGeo.attributes.color.array;
+  const tint = program.blocks.map((b) => {
+    const st = result.state.get(b.id);
+    return new THREE.Color(BLOCK_TYPES[b.type].color).multiplyScalar(st?.status === 'ok' ? 0.45 + st.value * 0.75 : 0.18);
+  });
+  for (let i = 0; i < QUANTA; i++) (tint[owners[i]] ?? new THREE.Color(0x335566)).toArray(col, i * 3);
+  quantaGeo.attributes.color.needsUpdate = true;
+}
+
+// --- 접합면: 연결된 두 셀이 맞닿는 보로노이 면 위에서 빛나는 판 ------------------------------
+// 이웃한 셀이면 맞닿은 면(수직이등분면) 위에, 떨어져 있으면 장 속 두 셀 사이에 놓인다. 신호는 장 속을 빛으로 지나간다.
 const seamGeo = new THREE.CylinderGeometry(0.62, 0.62, 0.07, 6);
 const seamViews = new Map();   // wireId -> { mesh, type, from, to, curve }
 const pickWires = [];
@@ -155,14 +179,38 @@ function rebuildSeams() {
   }
 }
 
-// 격자점을 화면 위치로: 셀, 접합면, 신호 경로를 함께 옮긴다 (4D 는 매 프레임)
+// D 에 따라 장 전체를 다시 세운다: 블록 씨앗, 양자, 보로노이 셀, 접합면
 const UP = new THREE.Vector3(0, 1, 0);
-function placeAll() {
-  for (const [id, v] of views) {
-    const p = project(sites.get(id) ?? [0, 0, 0, 0], hyperAngle);
-    v.group.position.set(p.x, p.y, p.z);
-    v.group.scale.setScalar(p.scale);
+function shapeField() {
+  const D = dim();
+  const pos = seeds(program, D);
+  for (const [id, v] of views) v.group.position.fromArray(pos.get(id));
+
+  const q = quanta(D, QUANTA);
+  quantaGeo.attributes.position.array.set(q);
+  quantaGeo.attributes.position.needsUpdate = true;
+  quantaGeo.computeBoundingBox();
+  const pts = program.blocks.map((b) => pos.get(b.id));
+  owners = new Int32Array(QUANTA).fill(-1);
+  for (let i = 0; i < QUANTA; i++) {
+    let best = Infinity;
+    pts.forEach((p, k) => {
+      const d = (q[i * 3] - p[0]) ** 2 + (q[i * 3 + 1] - p[1]) ** 2 + (q[i * 3 + 2] - p[2]) ** 2;
+      if (d < best) { best = d; owners[i] = k; }
+    });
   }
+
+  // 셀은 씨앗 쪽으로 조금 줄여 결정 알갱이 사이에 틈을 둔다
+  voronoi(pts, q).forEach((verts, k) => {
+    const v = views.get(program.blocks[k].id);
+    v.body.geometry.dispose();
+    v.edges.geometry.dispose();
+    const s = pts[k];
+    const shrunk = verts.map((p) => new THREE.Vector3(s[0] + (p[0] - s[0]) * 0.96, s[1] + (p[1] - s[1]) * 0.96, s[2] + (p[2] - s[2]) * 0.96));
+    v.body.geometry = shrunk.length >= 4 ? new ConvexGeometry(shrunk) : new THREE.BufferGeometry();
+    v.edges.geometry = new THREE.EdgesGeometry(v.body.geometry, 1);
+  });
+
   for (const v of seamViews.values()) {
     const a = views.get(v.from).group.position, b = views.get(v.to).group.position;
     v.curve.v1.copy(a);
@@ -170,14 +218,13 @@ function placeAll() {
     v.mesh.position.lerpVectors(a, b, 0.5);
     const dir = b.clone().sub(a);
     if (dir.lengthSq() > 1e-6) v.mesh.quaternion.setFromUnitVectors(UP, dir.normalize());
-    v.mesh.scale.setScalar(views.get(v.from).group.scale.x);
   }
+  paintQuanta();
 }
 
 function termWorld(blockId, side, portId) {
   const b = program.blocks.find((x) => x.id === blockId);
-  const g = views.get(blockId).group;
-  return portOffset(BLOCK_TYPES[b.type], side, portId).multiplyScalar(g.scale.x).add(g.position);
+  return portOffset(BLOCK_TYPES[b.type], side, portId).add(views.get(blockId).group.position);
 }
 
 // 신호가 흐르는 접합을 지나는 빛
@@ -201,9 +248,8 @@ function refresh(save = true) {
   for (const b of program.blocks) {
     if (!views.has(b.id)) views.set(b.id, buildBlockView(b));
   }
-  sites = layout(program, dim());
   rebuildSeams();
-  placeAll();
+  shapeField();
   result = evaluate(program, env);
   if (save) delete program.nobase;   // 손대면 더 이상 초기 상태가 아니다
 
@@ -215,6 +261,8 @@ function refresh(save = true) {
     v.el.querySelector('.out').textContent = st.status === 'ok' ? `${Math.round(st.value * 100)}%` : st.status === 'idle' ? '대기' : '오류';
     v.body.material.emissiveIntensity = st.status === 'ok' ? 0.1 + st.value * 0.6 : 0.02;
     v.body.material.color.set(st.status === 'error' ? 0xa83a3a : st.status === 'idle' ? 0x4a5866 : BLOCK_TYPES[b.type].color);
+    v.core.material.color.copy(v.body.material.color);
+    v.core.material.emissiveIntensity = st.status === 'ok' ? 0.2 + st.value * 0.9 : 0.05;
     if (v.bloch) {
       v.bloch.holder.visible = !!st.bloch;
       if (st.bloch) {
@@ -230,6 +278,7 @@ function refresh(save = true) {
     }
   }
 
+  paintQuanta();
   nobaseEl.hidden = !program.nobase || !isActive(view);
   renderDimension();
   renderPaletteStatus();
@@ -308,33 +357,32 @@ function renderPaletteStatus() {
     + (result.system === null ? '— (Topology 블록에 아직 닿지 않음)' : `${Math.round(result.system * 100)}%`);
 }
 
-// --- 차원 선택: 컴퓨터가 보여 줄 수 있는 가장 높은 차원(4D)부터 0D 까지 ----------------------------
+// --- 프랙탈 차원: 볼륨처럼 0 ~ 4 를 연속으로 올리고 내린다 ------------------------------------
 function buildDimension() {
+  const input = h('input', { type: 'range', min: DIM_MIN, max: DIM_MAX, step: 0.01, value: dim() });
+  input.addEventListener('input', () => setDimension(Number(input.value), false));
+  input.addEventListener('change', () => hooks.save(program));
   dimEl.replaceChildren(
-    h('div', { className: 'dims-row' }, ...DIMENSIONS.map((x) => {
-      const b = h('button', { textContent: x.label, title: `${x.name} — ${x.note}` });
-      b.dataset.d = x.d;
-      b.addEventListener('click', () => setDimension(x.d));
-      return b;
-    })),
+    h('div', { className: 'dims-row' }, h('span', { className: 'dims-d' }), input),
+    h('div', { className: 'dims-ticks' }, ...['0 점', '1', '2', '3', '4 초입방체'].map((t) => h('span', { textContent: t }))),
     h('div', { className: 'dims-note' }),
   );
 }
 
 function renderDimension() {
-  const cur = DIMENSIONS.find((x) => x.d === dim());
-  dimEl.querySelectorAll('button').forEach((b) => b.classList.toggle('on', Number(b.dataset.d) === cur.d));
-  const note = dimEl.querySelector('.dims-note');
-  if (note) note.textContent = `${cur.label} ${cur.name} — ${cur.note}`;
+  const D = dim(), r = ratio(D);
+  const input = dimEl.querySelector('input');
+  if (input && document.activeElement !== input) input.value = D;
+  dimEl.querySelector('.dims-d').textContent = `D = ${D.toFixed(2)}`;
+  dimEl.querySelector('.dims-note').textContent =
+    `프랙탈 — 초입방체 16조각 자기복제 · 축척 r = ${r.toFixed(3)} · D = log16 / log(1/r)\n보로노이 — 양자장을 블록 셀로 나눈다`;
 }
 
-export function setDimension(d) {
-  if (d === dim()) return;
-  program.dim = d;
-  hyperAngle = 0;
-  refresh(false);   // 차원은 조립이 아니라 사양이다 — No Base 는 그대로
-  hooks.save(program);
-  overview();
+export function setDimension(d, save = true) {
+  program.dim = THREE.MathUtils.clamp(d, DIM_MIN, DIM_MAX);
+  shapeField();   // 차원은 조립이 아니라 장의 사양이다 — No Base 는 그대로
+  renderDimension();
+  if (save) hooks.save(program);
 }
 
 // 새 블록은 결정이 알아서 빈 격자점에 맞물린다
@@ -450,8 +498,9 @@ export function overview() {
   if (!program.blocks.length) { goal.target.copy(HOME.target); return; }
   const box = new THREE.Box3();
   views.forEach((v) => box.expandByPoint(v.group.position));
+  box.union(quantaGeo.boundingBox);
   goal.target.copy(box.getCenter(new THREE.Vector3()));
-  goal.sph.radius = Math.max(14, box.getSize(new THREE.Vector3()).length() * 1.3 + 8);   // 셀 크기만큼 여유
+  goal.sph.radius = Math.max(14, box.getSize(new THREE.Vector3()).length() * 1.6);
   // 왼쪽 팔레트에 가리지 않게 중심을 조금 왼쪽으로 잡아 블록이 화면 오른쪽에 오게 한다
   goal.target.x -= goal.sph.radius * 0.17;
 }
@@ -597,11 +646,8 @@ function update(dt, t) {
   camera.position.setFromSpherical(cur.sph).add(cur.target);
   camera.lookAt(cur.target);
 
-  // 4D: 결정이 넷째 축 방향으로 흔들린다
-  if (dim() === 4) {
-    hyperAngle = 0.3 * Math.sin(t * 0.35);
-    placeAll();
-  }
+  // 양자장은 시스템 값만큼 요동한다
+  field.material.opacity = 0.55 + 0.25 * (result.system ?? 0) * (0.5 + 0.5 * Math.sin(t * 2.4));
 
   const arr = pulseGeo.attributes.position.array;
   let n = 0;
@@ -626,8 +672,8 @@ const view = {
   update,
   render: () => labels.render(scene, camera),
   resize: () => labels.setSize(innerWidth, innerHeight),
-  status: () => (program.nobase ? `No Base · ${dim()}D`
-    : `${dim()}D · 블록 ${program.blocks.length} · 시스템 ${result.system === null ? '—' : `${Math.round(result.system * 100)}%`}`),
+  status: () => (program.nobase ? `No Base · D ${dim().toFixed(2)}`
+    : `D ${dim().toFixed(2)} · 블록 ${program.blocks.length} · 시스템 ${result.system === null ? '—' : `${Math.round(result.system * 100)}%`}`),
 };
 registerView('diagram', view);
 onViewChange((name) => {

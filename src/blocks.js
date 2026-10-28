@@ -209,7 +209,7 @@ export function emptyProgram() {
 
 // No Base = Topology 자체의 초기 시스템 구조. Topology.md [결과] 의 관계대로 블록을 잇는다.
 //   환경(WIFI·데이터·전화번호) → VPN → Network → 빅데이터 → QE 코어 → Instrument → AI → Graphic → Topology
-// 블록이 어디에 놓이는지는 고른 차원의 결정 격자가 정한다(crystal.js).
+// 블록이 어디에 놓이는지는 프랙탈 양자장이 정한다(field.js).
 const BASE_TYPES = ['wifi', 'data', 'phone', 'vpn', 'network', 'bigdata', 'qe', 'instrument', 'ai', 'graphic', 'topology'];
 const BASE_WIRES = [
   ['wifi', 'link', 'vpn', 'link'], ['data', 'data', 'vpn', 'data'],
@@ -240,5 +240,5 @@ export function sanitize(p) {
   const ids = new Set(blocks.map((b) => b.id));
   const wires = p.wires.filter((w) => w && ids.has(w.from?.block) && ids.has(w.to?.block)
     && findPort({ blocks }, w.from.block, w.from.port, 'outs') && findPort({ blocks }, w.to.block, w.to.port, 'ins'));
-  return { blocks, wires, ...(p.nobase ? { nobase: true } : {}), ...(Number.isInteger(p.dim) ? { dim: p.dim } : {}) };
+  return { blocks, wires, ...(p.nobase ? { nobase: true } : {}), ...(Number.isFinite(p.dim) ? { dim: p.dim } : {}) };
 }

@@ -99,7 +99,7 @@ await desktop.init({
   ],
 });
 
-// 개발 확인용: ?open=<경로> 는 데스크톱에서 그 폴더 층까지 열고, ?view=desktop 은 창 두 개를 띄운다. ?dim=<0~4> 는 결정 차원.
+// 개발 확인용: ?open=<경로> 는 데스크톱에서 그 폴더 층까지 열고, ?view=desktop 은 창 두 개를 띄운다. ?dim=<0~4> 는 프랙탈 차원.
 const q = new URLSearchParams(location.search);
 if (q.has('dim')) diagram.setDimension(Number(q.get('dim')));
 if (q.has('open')) diagram.hooks.openFolder(q.get('open'));
