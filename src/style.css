@@ -45,6 +45,7 @@ input:focus { border-color: var(--accent); }
 .design td:first-child { font-family: inherit; white-space: normal; }
 .design input[type="range"] { width: 100%; accent-color: var(--accent); padding: 0; border: 0; background: transparent; }
 .layer-maps { display: flex; flex-wrap: wrap; gap: 6px; }
+.design .assembly { margin: 0; padding-left: 20px; font-size: 11px; line-height: 1.6; }
 .layer-map { margin: 0; padding: 3px; border: 1px solid var(--line); border-radius: 4px; opacity: 0.55; }
 .layer-map.on { opacity: 1; border-color: var(--accent); }
 .layer-map figcaption { font-size: 10px; color: var(--dim); text-align: center; }
