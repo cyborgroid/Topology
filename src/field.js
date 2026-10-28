@@ -54,23 +54,30 @@ export function flowOrder(program) {
   return [...order, ...[...indeg.keys()].filter((id) => !order.includes(id))];   // 고리에 걸린 블록은 끝에
 }
 
-// 블록 id -> { p: 3D 씨앗 위치(무게중심이 원점, 반지름 RADIUS), k: 순서, scale: 선형 축척 λ, size: 크기 배수 λ^D }
-export function seeds(program, D) {
-  const order = flowOrder(program);
+// 같은 차원 법칙으로 n 개의 씨앗을 놓는다: 그레이 코드 경로를 한 걸음씩, 걸음마다 축척 ρ = r^(1/(n-1)).
+// 무게중심이 원점, 반지름 1. 블록 구조와 영역 안의 폴더·파일이 같은 법칙을 따른다(자기닮음).
+export function pathSeeds(n, D) {
   const r = Math.min(1 / R_LIMIT, Math.max(R_LIMIT, ratio(D)));
-  const step = order.length > 1 ? r ** (1 / (order.length - 1)) : 1;
+  const step = n > 1 ? r ** (1 / (n - 1)) : 1;
   const raw = [];
   let p = [0, 0, 0, 0], scale = 1;
-  order.forEach((id, k) => {
+  for (let k = 0; k < n; k++) {
     p = p.map((v, i) => v + scale * CORNERS[gray(k % N)][i]);
     scale *= step;
     raw.push(project(p));
-  });
-  const c = [0, 1, 2].map((i) => raw.reduce((s, q) => s + q[i], 0) / Math.max(raw.length, 1));
+  }
+  const c = [0, 1, 2].map((i) => raw.reduce((s, q) => s + q[i], 0) / Math.max(n, 1));
   const far = Math.max(1e-9, ...raw.map((q) => Math.hypot(q[0] - c[0], q[1] - c[1], q[2] - c[2])));
+  return { points: raw.map((q) => q.map((v, i) => (v - c[i]) / far)), step };
+}
+
+// 블록 id -> { p: 3D 씨앗 위치(무게중심이 원점, 반지름 RADIUS), k: 순서, scale: 선형 축척 λ, size: 크기 배수 λ^D }
+export function seeds(program, D) {
+  const order = flowOrder(program);
+  const { points, step } = pathSeeds(order.length, D);
   const n = Math.max(order.length - 1, 1);
   return new Map(order.map((id, k) => [id, {
-    p: raw[k].map((v, i) => ((v - c[i]) / far) * RADIUS),
+    p: points[k].map((v) => v * RADIUS),
     k,
     scale: step ** k,
     size: D === 0 ? (k ? 0 : 1) : N ** (-k / n),   // λ^D = (r^D)^(k/n) = 16^(-k/n)
@@ -86,9 +93,11 @@ const BOUND_DIRS = [
   ...[-1, 1].flatMap((x) => [-1, 1].flatMap((y) => [-1, 1].map((z) => [x, y, z].map((v) => v / Math.sqrt(3))))),
 ];
 
-// 씨앗마다 개척한 영역(볼록 다면체)의 꼭짓점들 = 반공간의 교집합
-export function voronoi(points) {
-  const bounds = BOUND_DIRS.map((n) => ({ n, c: Math.max(...points.map((p) => dot(n, p))) + MARGIN }));
+export const outerBounds = (points) => BOUND_DIRS.map((n) => ({ n, c: Math.max(...points.map((p) => dot(n, p))) + MARGIN }));
+
+// 씨앗마다 개척한 영역(볼록 다면체) = 반공간의 교집합. { verts, planes } — planes 는 안쪽 영역을 다시 나눌 때 경계가 된다.
+// bounds 를 주면 그 안에서만 개척한다 (부모 영역 안의 폴더·파일 영역).
+export function voronoi(points, bounds = outerBounds(points)) {
   return points.map((s, i) => {
     const planes = [...bounds];
     points.forEach((t, j) => {
@@ -112,6 +121,37 @@ export function voronoi(points) {
         }
       }
     }
-    return verts;
+    // 실제로 영역에 닿는 경계만 남긴다 (안쪽을 다시 나눌 때 계산이 가볍도록)
+    const touching = planes.filter((q) => verts.some((p) => Math.abs(dot(q.n, p) - q.c) < 1e-5));
+    return { verts, planes: touching };
   });
+}
+
+// 영역 안쪽으로 d 만큼 들인 경계 (안쪽 영역 사이에 틈을 둔다)
+export const inset = (planes, d) => planes.map((q) => ({ n: q.n, c: q.c - d }));
+
+// 씨앗에서 경계까지 가장 가까운 거리 = 영역에 들어가는 가장 큰 공의 반지름
+export const inradius = (s, planes) => Math.min(...planes.map((q) => q.c - dot(q.n, s)));
+
+// --- 양자 에너지 장: 영역 안의 프랙탈 먼지 ------------------------------------------------
+// 영역의 꼭짓점들을 끌개로 카오스 게임을 돌린다(p ← ρp + (1−ρ)v). 볼록 영역이라 점은 늘 영역 안에 있고,
+// ρ 는 차원에서 온다 — 같은 차원 법칙이 에너지 장의 결까지 정한다. 같은 난수 순서를 써서 영역이 움직여도 장이 끊기지 않는다.
+export function energy(verts, count, D, seed) {
+  const out = new Float32Array(count * 3);
+  if (!verts.length || !count) return out;
+  const rho = Math.min(0.75, Math.max(0.25, ratio(Math.abs(D)) || 0.25));
+  let st = seed | 0;
+  const rnd = () => {   // mulberry32
+    st = (st + 0x6d2b79f5) | 0;
+    let t = Math.imul(st ^ (st >>> 15), 1 | st);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  let p = [0, 1, 2].map((k) => verts.reduce((a, v) => a + v[k], 0) / verts.length);
+  for (let i = -8; i < count; i++) {
+    const v = verts[Math.floor(rnd() * verts.length)];
+    p = p.map((x, k) => rho * x + (1 - rho) * v[k]);
+    if (i >= 0) out.set(p, i * 3);
+  }
+  return out;
 }

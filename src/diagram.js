@@ -4,13 +4,16 @@
 // 시스템 구조는 보로노이 영역 개척으로 완성된다(field.js): 블록마다 씨앗에서 자기 영역을 개척하고, 그 영역이 곧
 // 양자 아날로그 뉴런 블록이다 — 물리(맞물린 덩어리)와 수학(영역 분할) 사이의 다리. 영역의 크기 배수는 차원 D 를 지수로
 // 계산한다(λ^D). 연결은 선이 아니라 두 영역이 맞닿는 접합면이 빛나는 것이다. 영역 중심에 양자 뉴런 핵과 단자가 있다.
+// 폴더와 파일도 양자 아날로그 뉴런 블록이다: 블록 영역 안에서 같은 차원 법칙으로 다시 영역을 개척한다(영역 안의 영역).
+// 영역 안은 블록의 신호만큼 양자 에너지 장이 찬다. 씨앗은 질량이어서(physics.js) 블록을 끌면 회로가 유기체처럼 따라온다.
 import * as THREE from 'three';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 import { canvas, registerView, isActive, isTyping, isUi, onViewChange } from './core.js';
 import { CONTROLS, NODES } from './topology.config.js';
-import { BLOCK_TYPES, SIGNALS, createBlock, canConnect, connect, removeBlock, evaluate, emptyProgram, baseProgram } from './blocks.js';
-import { DIM_LIMIT, DEFAULT_DIM, ratio, toSlider, fromSlider, seeds, voronoi, flowOrder } from './field.js';
+import { BLOCK_TYPES, SIGNALS, createBlock, canConnect, connect, removeBlock, evaluate, emptyProgram, baseProgram, quantumNeuron } from './blocks.js';
+import { DIM_LIMIT, DEFAULT_DIM, ratio, toSlider, fromSlider, seeds, pathSeeds, voronoi, inset, inradius, energy, flowOrder } from './field.js';
+import { Physics } from './physics.js';
 
 const WATER = 0x04223a;
 const TERM_R = 0.17;
@@ -45,6 +48,8 @@ export const hooks = {
   openNetwork: () => {},
   openTerminal: () => {},
   openSystem: () => {},      // 데스크톱의 QE 시스템 창
+  listDir: async () => ({ entries: [], total: 0 }),   // 폴더 안의 항목
+  openFile: () => {},        // 파일을 기본 앱으로
   changed: () => {},         // 평가 결과가 바뀜 (시스템 창, 작업 표시줄 갱신)
 };
 
@@ -59,6 +64,9 @@ let result = { state: new Map(), live: new Set(), system: null };
 const dim = () => program.dim ?? DEFAULT_DIM;
 let measures = new Map();          // blockId -> { k, scale: 선형 축척 λ, size: 크기 배수 λ^D }
 const fieldBox = new THREE.Box3();   // 개척된 영역 전체
+const phys = new Physics();
+let cellPlanes = new Map();          // blockId -> 영역 경계 평면 (안쪽 폴더·파일 영역의 바깥 경계)
+let settling = false;                // 물리가 움직이는 중이면 안쪽 영역은 따라 옮기기만 하고, 멈추면 다시 개척한다
 
 // --- 블록 그리기: 보로노이 셀 + 중심의 양자 뉴런 핵 -----------------------------------------
 const coreGeo = new THREE.IcosahedronGeometry(0.42, 0);
@@ -95,7 +103,7 @@ function buildBlockView(b) {
   const core = new THREE.Mesh(coreGeo, new THREE.MeshStandardMaterial({ color: def.color, emissive: def.color, emissiveIntensity: 0.3, flatShading: true }));
   group.add(core);
 
-  // 개척한 영역 = 블록: 씨앗을 중심으로 한 볼록 다면체 덩어리와 그 모서리 (모양은 shapeField 가 채운다)
+  // 개척한 영역 = 블록: 씨앗을 중심으로 한 볼록 다면체 덩어리와 그 모서리 (모양은 layoutCells 가 채운다)
   const body = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshPhysicalMaterial({
     color: def.color, emissive: def.color, emissiveIntensity: 0.15, roughness: 0.3, clearcoat: 1, flatShading: true,
     transparent: true, opacity: 0.42, depthWrite: false,
@@ -173,26 +181,192 @@ function rebuildSeams() {
   }
 }
 
-// D 에 따라 구조 전체를 다시 세운다: 블록 씨앗, 개척한 영역, 접합면
-const UP = new THREE.Vector3(0, 1, 0);
-function shapeField() {
-  measures = seeds(program, dim());
-  for (const [id, v] of views) v.group.position.fromArray(measures.get(id).p);
+// --- 영역 다면체 -------------------------------------------------------------------
+// 영역은 씨앗 쪽으로 조금 줄여 블록 사이에 틈을 둔다 (맞물린 덩어리로 보이게). 모양은 씨앗 기준 지역 좌표.
+function setCell(mesh, seed, verts, shrink) {
+  const local = verts.map((q) => new THREE.Vector3((q[0] - seed[0]) * shrink, (q[1] - seed[1]) * shrink, (q[2] - seed[2]) * shrink));
+  mesh.geometry.dispose();
+  mesh.children[0].geometry.dispose();
+  mesh.geometry = local.length >= 4 ? new ConvexGeometry(local) : new THREE.BufferGeometry();
+  mesh.children[0].geometry = new THREE.EdgesGeometry(mesh.geometry, 1);
+  mesh.position.fromArray(seed);
+}
 
-  // 영역은 씨앗 쪽으로 조금 줄여 블록 사이에 틈을 둔다 (맞물린 덩어리로 보이게)
-  const pts = program.blocks.map((b) => measures.get(b.id).p);
+// 수학 자리: 차원 D 의 씨앗 + 사용자가 끌어 옮겨 둔 만큼(b.off). 물리는 이 자리로 당긴다.
+function computeRest() {
+  measures = seeds(program, dim());
+  phys.sync(
+    new Map(program.blocks.map((b) => [b.id, measures.get(b.id).p.map((v, i) => v + (b.off?.[i] ?? 0))])),
+    program.wires.map((w) => [w.from.block, w.to.block]),
+  );
+}
+
+// --- 폴더·파일 블록 ----------------------------------------------------------------
+// 블록이 다루는 폴더(데이터 = 고른 폴더의 항목, 그 밖 = 개념에 접목된 폴더)가 블록 영역 안의 영역이 된다.
+// 폴더 블록을 펼치면 그 안의 항목이 다시 그 영역 안을 개척한다. 각 항목은 양자 뉴런 하나를 갖는다(크기·항목 수가 입력).
+const NODE_LIMIT = 24;
+const nodes = new Map();   // key -> { key, owner, parent, path, name, dir, size, total, kids, open, view, local }
+const roots = new Map();   // blockId -> [key]
+const pickNodes = [];
+const KIND = [
+  [/\.(png|jpe?g|gif|svg|webp|bmp|mp4|mkv|webm|avi|mov)$/i, 'graphic'],
+  [/\.(mp3|wav|flac|ogg|m4a)$/i, 'qe'],
+  [/\.(md|txt|pdf|docx?|odt|rtf|csv)$/i, 'instrument'],
+  [/\.(js|ts|py|c|cpp|h|java|rs|go|sh|json|html|css)$/i, 'ai'],
+  [/\.(zip|tar|gz|xz|7z|rar|deb|iso)$/i, 'bigdata'],
+];
+const nodeColor = (n) => (n.dir ? 0x9fe8ff : BLOCK_TYPES[KIND.find(([re]) => re.test(n.name))?.[1] ?? 'data'].color);
+const nodeValue = (n) => quantumNeuron([Math.min(1, n.dir ? Math.log10((n.total ?? 30) + 1) / 3 : Math.log10(n.size + 1) / 9)]).value;
+const shortName = (s) => (s.length > 16 ? `${s.slice(0, 15)}…` : s);
+
+function addNode(owner, parent, e) {
+  const key = `${owner}|${e.path}`;
+  if (nodes.has(key)) return key;
+  const n = { key, owner, parent, path: e.path, name: e.name, dir: e.dir, size: e.size ?? 0, total: null, kids: null, open: false, local: null };
+  const color = nodeColor(n);
+  const body = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshPhysicalMaterial({
+    color, emissive: color, emissiveIntensity: 0.1 + nodeValue(n) * 0.5, roughness: 0.3, clearcoat: 1, flatShading: true,
+    transparent: true, opacity: 0.5, depthWrite: false,
+  }));
+  body.userData = { kind: 'node', key };
+  body.add(new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xe8fbff, transparent: true, opacity: 0.45 })));
+  const el = document.createElement('div');
+  el.className = 'label label-node';
+  el.textContent = `${n.dir ? '📁 ' : ''}${shortName(n.name)}`;
+  body.add(new CSS2DObject(el));
+  body.visible = false;   // 처음 개척될 때 보인다
+  scene.add(body);
+  pickNodes.push(body);
+  n.view = { body, el };
+  nodes.set(key, n);
+  return key;
+}
+
+function dropNode(key) {
+  const n = nodes.get(key);
+  if (!n) return;
+  n.kids?.forEach(dropNode);
+  n.view.body.traverse((o) => { if (o.element) o.element.remove(); });
+  scene.remove(n.view.body);
+  for (const m of [n.view.body, n.view.body.children[0]]) { m.geometry.dispose(); m.material.dispose(); }
+  pickNodes.splice(pickNodes.indexOf(n.view.body), 1);
+  nodes.delete(key);
+  if (selected?.kind === 'node' && selected.key === key) selected = null;
+}
+
+async function loadKids(owner, parentKey, path) {
+  const res = await hooks.listDir(path, { limit: NODE_LIMIT });
+  if (!program.blocks.some((b) => b.id === owner)) return;
+  const keys = (res.entries ?? []).map((e) => addNode(owner, parentKey, e));
+  const parent = parentKey && nodes.get(parentKey);
+  if (parentKey && !parent) return;
+  if (parent) { parent.kids = keys; parent.total = res.total; } else roots.set(owner, keys);
+  layoutCells(true);
+  renderInfo();
+}
+
+function ensureRoots() {
+  for (const id of [...roots.keys()]) {
+    if (!program.blocks.some((b) => b.id === id)) { roots.get(id).forEach(dropNode); roots.delete(id); }
+  }
+  for (const b of program.blocks) {
+    if (roots.has(b.id)) continue;
+    roots.set(b.id, []);
+    if (b.type === 'data') { if (b.path) loadKids(b.id, null, b.path); }
+    else roots.set(b.id, hooks.folders(BLOCK_TYPES[b.type].concept).map((f) => addNode(b.id, null, { name: f.name, path: f.path, dir: true })));
+  }
+}
+
+function resetRoots(blockId) {
+  roots.get(blockId)?.forEach(dropNode);
+  roots.delete(blockId);
+  ensureRoots();
+}
+
+function toggleFolder(key) {
+  const n = nodes.get(key);
+  if (!n?.dir) return;
+  if (n.open) {
+    n.kids?.forEach(dropNode);
+    n.kids = null;
+    n.open = false;
+    layoutCells(true);
+  } else {
+    n.open = true;
+    loadKids(n.owner, key, n.path);
+  }
+  renderInfo();
+}
+
+// 부모 영역(씨앗, 경계) 안을 같은 차원 법칙으로 다시 나눈다
+function layoutNodes(owner, seed, planes, keys) {
+  if (!keys?.length || !planes) return;
+  const r = Math.max(0.05, inradius(seed, planes));
+  const pts = pathSeeds(keys.length, dim()).points.map((q) => q.map((v, i) => seed[i] + v * r * 0.75));
+  const cells = voronoi(pts, inset(planes, Math.min(0.12, r * 0.1)));
+  const base = phys.pos(owner);
+  keys.forEach((key, k) => {
+    const n = nodes.get(key);
+    if (!n) return;
+    setCell(n.view.body, pts[k], cells[k].verts, 0.9);
+    n.local = pts[k].map((v, i) => v - base[i]);   // 블록이 움직이면 이만큼 떨어져 따라간다
+    if (n.open) layoutNodes(owner, pts[k], cells[k].planes, n.kids);
+  });
+}
+
+// --- 양자 에너지 장: 영역마다 그 블록의 신호만큼 찬다 ----------------------------------------
+const ENERGY = 6000;
+const energyGeo = new THREE.BufferGeometry();
+energyGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(ENERGY * 3), 3));
+energyGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(ENERGY * 3), 3));
+const energyField = new THREE.Points(energyGeo, new THREE.PointsMaterial({ size: 0.13, vertexColors: true, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false }));
+energyField.frustumCulled = false;
+scene.add(energyField);
+
+function fillEnergy(cells) {
+  const pos = energyGeo.attributes.position.array, col = energyGeo.attributes.color.array;
+  const weights = program.blocks.map((b, k) => {
+    const st = result.state.get(b.id);
+    const r = cells[k].planes.length ? Math.max(0.2, inradius(phys.pos(b.id), cells[k].planes)) : 0;
+    return r ** 2 * (st?.status === 'ok' ? 0.25 + st.value : 0.1);
+  });
+  const total = weights.reduce((a, w) => a + w, 0) || 1;
+  let at = 0;
+  program.blocks.forEach((b, k) => {
+    const count = k === program.blocks.length - 1 ? ENERGY - at : Math.floor((ENERGY * weights[k]) / total);
+    pos.set(energy(cells[k].verts, count, dim(), k * 7919 + 13), at * 3);
+    const st = result.state.get(b.id);
+    const c = new THREE.Color(BLOCK_TYPES[b.type].color).multiplyScalar(st?.status === 'ok' ? 0.3 + st.value * 0.7 : 0.12);
+    for (let i = at; i < at + count; i++) c.toArray(col, i * 3);
+    at += count;
+  });
+  energyGeo.setDrawRange(0, at);
+  energyGeo.attributes.position.needsUpdate = true;
+  energyGeo.attributes.color.needsUpdate = true;
+}
+
+// --- 지금 씨앗 자리(물리)로 영역을 다시 개척한다 ------------------------------------------
+// full = false 면(물리가 움직이는 중) 안쪽 폴더·파일 영역은 다시 나누지 않고 블록을 따라 옮기기만 한다
+const UP = new THREE.Vector3(0, 1, 0);
+function layoutCells(full) {
+  const pts = program.blocks.map((b) => phys.pos(b.id));
+  for (const b of program.blocks) views.get(b.id).group.position.fromArray(phys.pos(b.id));
   fieldBox.makeEmpty();
-  voronoi(pts).forEach((verts, k) => {
-    const v = views.get(program.blocks[k].id);
-    const [sx, sy, sz] = pts[k];
-    const local = verts.map((q) => new THREE.Vector3((q[0] - sx) * 0.94, (q[1] - sy) * 0.94, (q[2] - sz) * 0.94));
-    v.body.geometry.dispose();
-    v.body.children[0].geometry.dispose();
-    v.body.geometry = local.length >= 4 ? new ConvexGeometry(local) : new THREE.BufferGeometry();
-    v.body.children[0].geometry = new THREE.EdgesGeometry(v.body.geometry, 1);
-    v.body.position.set(sx, sy, sz);
+  const cells = pts.length ? voronoi(pts) : [];
+  cells.forEach(({ verts, planes }, k) => {
+    const id = program.blocks[k].id;
+    setCell(views.get(id).body, pts[k], verts, 0.94);
+    cellPlanes.set(id, planes);
     verts.forEach((q) => fieldBox.expandByPoint(new THREE.Vector3(...q)));
   });
+
+  if (full) {
+    for (const b of program.blocks) layoutNodes(b.id, phys.pos(b.id), cellPlanes.get(b.id), roots.get(b.id));
+  } else {
+    for (const n of nodes.values()) {
+      if (n.local) n.view.body.position.fromArray(phys.pos(n.owner).map((v, i) => v + n.local[i]));
+    }
+  }
 
   for (const v of seamViews.values()) {
     const a = views.get(v.from).group.position, b = views.get(v.to).group.position;
@@ -202,6 +376,7 @@ function shapeField() {
     const dir = b.clone().sub(a);
     if (dir.lengthSq() > 1e-6) v.mesh.quaternion.setFromUnitVectors(UP, dir.normalize());
   }
+  fillEnergy(cells);
 }
 
 function termWorld(blockId, side, portId) {
@@ -231,8 +406,10 @@ function refresh(save = true) {
     if (!views.has(b.id)) views.set(b.id, buildBlockView(b));
   }
   rebuildSeams();
-  shapeField();
   result = evaluate(program, env);
+  computeRest();
+  ensureRoots();
+  layoutCells(true);
   if (save) delete program.nobase;   // 손대면 더 이상 초기 상태가 아니다
 
   for (const b of program.blocks) {
@@ -375,7 +552,8 @@ function renderDimension() {
 
 export function setDimension(d, save = true) {
   program.dim = THREE.MathUtils.clamp(d, -DIM_LIMIT, DIM_LIMIT);
-  shapeField();   // 차원은 조립이 아니라 구조의 사양이다 — No Base 는 그대로
+  computeRest();   // 차원은 조립이 아니라 구조의 사양이다 — No Base 는 그대로. 회로는 물리로 새 자리에 옮겨 간다
+  settling = true;
   renderDimension();
   renderInfo();
   if (save) hooks.save(program);
@@ -399,7 +577,7 @@ canvas.addEventListener('drop', (e) => {
 });
 
 // --- 선택과 정보 패널 -------------------------------------------------------------
-let selected = null;   // { kind: 'block' | 'wire', id }
+let selected = null;   // { kind: 'block' | 'wire', id } | { kind: 'node', key }
 
 function select(sel) {
   selected = sel;
@@ -428,6 +606,25 @@ function renderInfo() {
     return;
   }
 
+  if (selected.kind === 'node') {
+    const n = nodes.get(selected.key);
+    if (!n) { infoEl.hidden = true; return; }
+    const owner = program.blocks.find((x) => x.id === n.owner);
+    const lines = [n.path, n.dir ? `항목 ${n.total ?? '?'}개` : `${(n.size / 1024).toFixed(1)} KB`,
+      `양자 뉴런 ${(nodeValue(n) * 100).toFixed(0)}% (${n.dir ? '항목 수' : '크기'}가 입력)`];
+    const actions = n.dir
+      ? [button(n.open ? '⊟ 접기' : '⊞ 펼치기 (안쪽 영역 개척)', () => toggleFolder(n.key)), button('📁 폴더 층 열기', () => hooks.openFolder(n.path))]
+      : [button('▶ 열기', () => hooks.openFile(n.path), '기본 앱으로 연다')];
+    infoEl.hidden = false;
+    infoEl.replaceChildren(
+      h('div', { className: 'kind', textContent: `${owner?.name ?? ''} 영역 · ${n.dir ? '폴더' : '파일'} 블록` }),
+      h('strong', { textContent: n.name }),
+      h('div', { className: 'live status-ok', textContent: lines.join('\n') }),
+      h('div', { className: 'actions' }, ...actions),
+    );
+    return;
+  }
+
   const b = program.blocks.find((x) => x.id === selected.id);
   if (!b) { infoEl.hidden = true; return; }
   const def = BLOCK_TYPES[b.type];
@@ -441,7 +638,7 @@ function renderInfo() {
   const params = [];
   if (b.type === 'data') {
     const sel = h('select', {}, ...hooks.dataPlaces().map((p) => h('option', { value: p.path, textContent: `${p.name} — ${p.path}`, selected: p.path === b.path })));
-    sel.addEventListener('change', () => { b.path = sel.value; hooks.save(program); hooks.needData(b.path); });
+    sel.addEventListener('change', () => { b.path = sel.value; hooks.save(program); hooks.needData(b.path); resetRoots(b.id); });
     params.push(h('label', { className: 'param' }, h('span', { className: 'dim', textContent: '데이터 폴더' }), sel));
   }
 
@@ -455,6 +652,7 @@ function renderInfo() {
   if (st.msg) lines.push(st.msg);
   const m = measures.get(b.id);
   if (m) lines.push(`영역 ${m.k + 1}번째 · 선형 축척 λ = ${fmtR(m.scale)} · 크기 배수 λ^D = ${fmtR(m.size)}`);
+  if (roots.get(b.id)?.length) lines.push(`안쪽 영역: 폴더·파일 블록 ${roots.get(b.id).length}개 — 영역 안을 클릭`);
 
   // Topology 환경으로 가는 통로
   const links = [];
@@ -483,7 +681,9 @@ function renderInfo() {
     h('div', { className: `live status-${st.status}`, textContent: lines.join('\n') }),
     ...(joins.length ? [h('div', { className: 'dim', textContent: '접합 (누르면 끊기)' }), h('div', { className: 'actions' }, ...joins)] : []),
     ...(links.length ? [h('div', { className: 'dim', textContent: 'Topology 환경' }), h('div', { className: 'actions' }, ...links)] : []),
-    h('div', { className: 'actions' }, button('블록 지우기', () => { removeBlock(program, b.id); select(null); refresh(); })),
+    h('div', { className: 'actions' },
+      button('블록 지우기', () => { removeBlock(program, b.id); select(null); refresh(); }),
+      ...(b.off ? [button('⟲ 수학 자리로', () => { delete b.off; refresh(); }, '끌어 옮긴 것을 되돌린다')] : [])),
   );
 }
 
@@ -505,8 +705,9 @@ export function overview() {
 }
 
 // --- 마우스 ---------------------------------------------------------------------
-// 블록 자리는 결정이 정한다. 단자 드래그 = 잇기, 왼쪽 드래그 = 회전, 오른쪽 드래그 = 이동,
-// 스크롤 = 다가가기/물러나기, 클릭 = 선택, Delete = 선택한 블록·연결 지우기.
+// 블록 드래그 = 끌어 옮기기(물리: 이어진 회로가 따라온다), 단자 드래그 = 잇기, 빈 곳·Shift 드래그 = 회전,
+// 오른쪽 드래그 = 이동, 스크롤 = 다가가기/물러나기, 클릭 = 선택(블록을 고르면 그 안의 폴더·파일 블록을 고를 수 있다),
+// 더블클릭 = 폴더 펼치기·파일 열기, Delete = 선택한 블록·연결 지우기.
 const raycaster = new THREE.Raycaster();
 function ray(e) {
   raycaster.setFromCamera(new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1), camera);
@@ -548,15 +749,30 @@ canvas.addEventListener('pointerdown', (e) => {
     highlightTerms(term);
     return;
   }
-  drag = { mode: 'orbit', moved: 0, block: pickAt(e, pickBodies)?.id };
+  const node = pickAt(e, focusedNodes());
+  if (node) { drag = { mode: 'orbit', moved: 0, node: node.key }; return; }
+  const body = !e.shiftKey && pickAt(e, pickBodies);
+  if (body) {
+    const at = new THREE.Vector3().fromArray(phys.pos(body.id));
+    const normal = camera.getWorldDirection(new THREE.Vector3());
+    drag = { mode: 'grab', moved: 0, id: body.id, plane: new THREE.Plane().setFromNormalAndCoplanarPoint(normal, at) };
+    return;
+  }
+  drag = { mode: 'orbit', moved: 0 };
 });
+
+// 블록을 고르면 그 영역 안의 폴더·파일 블록을 먼저 집는다 (영역 안으로 들어가기)
+function focusedNodes() {
+  const owner = selected?.kind === 'block' ? selected.id : selected?.kind === 'node' ? nodes.get(selected.key)?.owner : null;
+  return owner ? pickNodes.filter((m) => nodes.get(m.userData.key)?.owner === owner && m.visible) : [];
+}
 
 canvas.addEventListener('pointermove', (e) => {
   if (!isActive(view)) return;
   if (!drag) {
     const t = pickAt(e, pickTerms);
-    const b = !t && pickAt(e, pickBodies);
-    canvas.style.cursor = t ? 'crosshair' : b ? 'pointer' : 'grab';
+    const b = !t && (pickAt(e, focusedNodes()) || (!e.shiftKey && pickAt(e, pickBodies)));
+    canvas.style.cursor = t ? 'crosshair' : b ? (b.kind === 'node' ? 'pointer' : 'move') : 'grab';
     return;
   }
   drag.moved += Math.abs(e.movementX) + Math.abs(e.movementY);
@@ -570,6 +786,9 @@ canvas.addEventListener('pointermove', (e) => {
     goal.target.addScaledVector(right, -e.movementX * k).addScaledVector(fwd, e.movementY * k);
   } else if (drag.mode === 'zoom') {
     goal.sph.radius = THREE.MathUtils.clamp(goal.sph.radius * Math.exp(e.movementY * 0.01), 5, 120);
+  } else if (drag.mode === 'grab') {
+    const p = ray(e).ray.intersectPlane(drag.plane, new THREE.Vector3());
+    if (p && drag.moved >= 4) phys.hold(drag.id, p.toArray());
   } else if (drag.mode === 'wire') {
     const t = pickAt(e, pickTerms);
     hoverTerm = compatible(drag.from, t) ? t : null;
@@ -598,14 +817,29 @@ canvas.addEventListener('pointerup', (e) => {
       select({ kind: 'block', id: d.from.id });
     }
     hoverTerm = null;
+  } else if (d.mode === 'grab') {
+    if (d.moved < 4) { select({ kind: 'block', id: d.id }); return; }
+    // 놓은 자리가 새 자리: 수학 자리에서 옮긴 만큼을 기억한다
+    const b = program.blocks.find((x) => x.id === d.id);
+    const p = phys.pos(d.id), m = measures.get(d.id).p;
+    b.off = p.map((v, i) => Math.round((v - m[i]) * 100) / 100);
+    phys.release();
+    refresh();
   } else if (d.mode === 'orbit' && d.moved < 4) {
     const w = pickAt(e, pickWires);
-    select(d.block ? { kind: 'block', id: d.block } : w ? { kind: 'wire', id: w.id } : null);
+    select(d.node ? { kind: 'node', key: d.node } : w ? { kind: 'wire', id: w.id } : null);
   }
 });
 
 canvas.addEventListener('dblclick', (e) => {
   if (!isActive(view)) return;
+  const node = pickAt(e, focusedNodes());
+  if (node) {
+    const n = nodes.get(node.key);
+    if (n.dir) toggleFolder(n.key);
+    else hooks.openFile(n.path);
+    return;
+  }
   const body = pickAt(e, pickBodies);
   if (body) {
     goal.target.copy(views.get(body.id).group.position);
@@ -622,7 +856,7 @@ addEventListener('wheel', (e) => {
 
 addEventListener('keydown', (e) => {
   if (!isActive(view) || isTyping(e.target)) return;
-  if ((e.code === 'Delete' || e.code === 'Backspace') && selected) {
+  if ((e.code === 'Delete' || e.code === 'Backspace') && (selected?.kind === 'block' || selected?.kind === 'wire')) {
     if (selected.kind === 'block') removeBlock(program, selected.id);
     else program.wires = program.wires.filter((w) => w.id !== selected.id);
     select(null);
@@ -645,6 +879,24 @@ function update(dt, t) {
   camera.position.setFromSpherical(cur.sph).add(cur.target);
   camera.lookAt(cur.target);
 
+  // 물리: 움직이는 동안은 영역을 매 프레임 다시 개척하고, 자리를 잡으면 안쪽 영역까지 다시 개척한다
+  if (phys.step(dt) > 1e-3) {
+    layoutCells(false);
+    settling = true;
+  } else if (settling) {
+    settling = false;
+    layoutCells(true);
+  }
+
+  // 고른 블록은 투명해져 안쪽 폴더·파일 블록이 보인다. 이름표는 고른 영역 것만.
+  const focus = selected?.kind === 'block' ? selected.id : selected?.kind === 'node' ? nodes.get(selected.key)?.owner : null;
+  for (const [id, v] of views) v.body.material.opacity = focus === id && roots.get(id)?.length ? 0.14 : 0.42;
+  for (const n of nodes.values()) {
+    n.view.body.visible = !!n.local && (views.get(n.owner)?.grow ?? 1) >= 1;
+    n.view.el.hidden = n.owner !== focus;
+    n.view.el.classList.toggle('selected', selected?.kind === 'node' && selected.key === n.key);
+  }
+
   // 영역 개척: 기다렸다가 씨앗에서 경계까지 자라난다
   for (const v of views.values()) {
     if (v.grow >= 1) continue;
@@ -666,6 +918,7 @@ function update(dt, t) {
   }
   pulseGeo.setDrawRange(0, n);
   pulseGeo.attributes.position.needsUpdate = true;
+  energyField.material.opacity = 0.6 + 0.25 * (result.system ?? 0) * (0.5 + 0.5 * Math.sin(t * 2.4));   // 장의 요동
 
   for (const [id, v] of views) v.el.classList.toggle('selected', selected?.kind === 'block' && selected.id === id);
   for (const [id, v] of seamViews) {
@@ -687,6 +940,12 @@ onViewChange((name) => {
   infoEl.hidden = name !== 'diagram' || !selected;
   nobaseEl.hidden = name !== 'diagram' || !program.nobase;
 });
+
+// 개발 확인용: 그 종류의 첫 블록을 고른다 (main.js 의 ?focus=)
+export function focusType(type) {
+  const b = program.blocks.find((x) => x.type === type);
+  if (b) select({ kind: 'block', id: b.id });
+}
 
 export function build(saved, initialEnv) {
   // 손대지 않은 No Base 는 지금의 초기 구조로 다시 만든다

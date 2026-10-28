@@ -57,6 +57,8 @@ Object.assign(diagram.hooks, {
   openNetwork: () => openApp(networkApp()),
   openTerminal: () => openApp(terminalApp(places.home)),
   openSystem: () => openApp(qeSystemApp(() => latest)),
+  listDir: (path, opts) => api.listDir(path, opts),
+  openFile: (path) => api.open(path),
   changed: (snap) => {
     latest = snap;
     document.getElementById('tray-qe').textContent = snap.system === null ? '' : `◈ QE ${Math.round(snap.system * 100)}%`;
@@ -99,9 +101,10 @@ await desktop.init({
   ],
 });
 
-// 개발 확인용: ?open=<경로> 는 데스크톱에서 그 폴더 층까지 열고, ?view=desktop 은 창 두 개를 띄운다. ?dim=<0~4> 는 프랙탈 차원.
+// 개발 확인용: ?open=<경로> 는 데스크톱에서 그 폴더 층까지 열고, ?view=desktop 은 창 두 개를 띄운다. ?dim=<D> 는 차원, ?focus=<블록 종류> 는 그 블록을 고른다.
 const q = new URLSearchParams(location.search);
 if (q.has('dim')) diagram.setDimension(Number(q.get('dim')));
+if (q.has('focus')) diagram.focusType(q.get('focus'));
 if (q.has('open')) diagram.hooks.openFolder(q.get('open'));
 if (q.get('view') === 'desktop') {
   openApp(systemApp());
