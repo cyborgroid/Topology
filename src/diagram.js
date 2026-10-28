@@ -1,18 +1,17 @@
 // 다이어그램 뷰: Quantum Neuron Block Computing 의 3D 조립판.
 // No Base(초기 상태) = Topology 자체의 시스템 구조가 조립된 판. 여기서 블록을 꺼내 놓거나 단자를 다시 이어 시스템을 키운다.
 // 조립이 바뀌거나 환경 값이 바뀔 때마다 시스템 전체를 계산해(blocks.js) 블록마다 양자 뉴런의 상태를 보여 준다.
-// 시스템은 하나의 수학적 결정체로 그린다: 블록 = 격자점의 육각 결정 단위, 연결 = 직선 모서리,
-// 전체를 감싸는 볼록 껍질 = 결정면. 블록은 층(y) 을 가진다.
+// 시스템은 하나의 결정체로 조립된다: 블록 = 육각기둥 결정 셀. 셀은 고른 차원(4D~0D)의 격자에 면을 맞대고 맞물리고(crystal.js),
+// 연결은 선이 아니라 셀 사이 접합면이 신호 색으로 빛나는 것으로 보인다. 단자는 셀 윗면의 돌기다.
 import * as THREE from 'three';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
-import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 import { canvas, registerView, isActive, isTyping, isUi, onViewChange } from './core.js';
 import { CONTROLS, NODES } from './topology.config.js';
-import { BLOCK_TYPES, SIGNALS, createBlock, canConnect, connect, removeBlock, evaluate, emptyProgram, baseProgram, LAYERS } from './blocks.js';
+import { BLOCK_TYPES, SIGNALS, createBlock, canConnect, connect, removeBlock, evaluate, emptyProgram, baseProgram } from './blocks.js';
+import { CELL_R, CELL_H, DIMENSIONS, DEFAULT_DIM, layout, project } from './crystal.js';
 
 const WATER = 0x04223a;
-const BW = 2.8, BH = 0.6, BD = 1.8;   // 블록 크기
-const TERM_R = 0.2;
+const TERM_R = 0.17;
 
 export const scene = new THREE.Scene();
 scene.background = new THREE.Color(WATER);
@@ -33,6 +32,7 @@ const infoEl = document.getElementById('info');
 const hintEl = document.getElementById('diagram-hint');
 const paletteEl = document.getElementById('palette');
 const nobaseEl = document.getElementById('nobase');
+const dimEl = document.getElementById('dimension');
 
 // Topology 환경과 잇는 통로 (main.js 가 채운다)
 export const hooks = {
@@ -53,80 +53,36 @@ let program = emptyProgram();
 let env = {};
 let result = { state: new Map(), live: new Set(), system: null };
 
-// --- 결정면: 모든 블록을 감싸는 볼록 껍질 ---------------------------------------------
-const facets = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ color: 0x7fe7ff, transparent: true, opacity: 0.05, side: THREE.DoubleSide, depthWrite: false }));
-const ridges = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x9fefff, transparent: true, opacity: 0.3 }));
-scene.add(facets, ridges);
+// 시스템 전체의 차원 사양. 블록마다가 아니라 결정 하나에 적용된다.
+const dim = () => program.dim ?? DEFAULT_DIM;
+let sites = new Map();   // blockId -> 격자점 [x, y, z, w]
+let hyperAngle = 0;      // 4D: xw 평면 회전 (천천히 흔들린다)
 
-function shapeCrystal() {
-  facets.geometry.dispose();
-  ridges.geometry.dispose();
-  facets.visible = ridges.visible = program.blocks.length > 0;
-  if (!facets.visible) return;
-  const pts = [];
-  for (const b of program.blocks) {
-    for (const sx of [-1, 1]) for (const sz of [-1, 1]) for (const y of [b.y - 0.5, b.y + BH + 0.5]) {
-      pts.push(new THREE.Vector3(b.x + sx * (BW / 2 + 0.7), y, b.z + sz * (BD / 2 + 0.7)));
-    }
-  }
-  facets.geometry = new ConvexGeometry(pts);
-  ridges.geometry = new THREE.EdgesGeometry(facets.geometry, 1);   // 같은 평면의 삼각형 경계는 빼고 모서리만
-  shapeLayers();
-}
-
-// --- 차원 층: 같은 층 블록을 잇는 단면 다각형과 차원 라벨 -----------------------------------
-const layerViews = new Map();   // group -> { line, label }
-for (const [group, note] of Object.entries(LAYERS)) {
-  const line = new THREE.LineLoop(new THREE.BufferGeometry(), new THREE.LineDashedMaterial({ color: 0xfff1a8, transparent: true, opacity: 0.35, dashSize: 0.5, gapSize: 0.3 }));
-  const el = document.createElement('div');
-  el.className = 'label label-layer';
-  el.innerHTML = `<b>${group}</b><span>${note}</span>`;
-  const label = new CSS2DObject(el);
-  label.center.set(1, 0.5);
-  scene.add(line, label);
-  layerViews.set(group, { line, label });
-}
-
-function shapeLayers() {
-  for (const [group, v] of layerViews) {
-    const members = program.blocks.filter((b) => BLOCK_TYPES[b.type].group === group);
-    v.line.visible = members.length > 2;
-    v.label.visible = members.length > 0;
-    if (!members.length) continue;
-    const c = members.reduce((acc, b) => acc.add(new THREE.Vector3(b.x, b.y, b.z)), new THREE.Vector3()).divideScalar(members.length);
-    const ring = members.map((b) => new THREE.Vector3(b.x, b.y + BH / 2, b.z))
-      .sort((a, b) => Math.atan2(a.z - c.z, a.x - c.x) - Math.atan2(b.z - c.z, b.x - c.x));
-    v.line.geometry.dispose();
-    v.line.geometry = new THREE.BufferGeometry().setFromPoints(ring);
-    v.line.computeLineDistances();
-    const left = Math.min(...members.map((b) => b.x));
-    v.label.position.set(left - BW / 2 - 1.2, c.y + BH / 2, c.z);
-  }
-}
-
-// --- 블록 그리기: 육각 결정 단위 -----------------------------------------------------
-const unitCell = new THREE.CylinderGeometry(1, 1, BH, 6).scale(BW / 2, 1, BD / 2).translate(0, BH / 2, 0);
+// --- 블록 그리기: 육각기둥 결정 셀 ---------------------------------------------------
+// 꼭짓점이 +z, 평평한 면이 ±x 를 향한다(crystal.js 의 벌집 격자와 맞물리게). 셀 사이에 얇은 틈을 둔다.
+const cellGeo = new THREE.CylinderGeometry(CELL_R * 0.97, CELL_R * 0.97, CELL_H * 0.96, 6);
+const cellEdges = new THREE.EdgesGeometry(cellGeo);
 const termGeo = new THREE.SphereGeometry(TERM_R, 16, 12);
 
 const views = new Map();   // blockId -> { group, body, terms, el, bloch }
 const pickBodies = [];
 const pickTerms = [];
 
-// 입력 단자는 왼쪽 면, 출력 단자는 오른쪽 면에 고르게
+// 단자 = 윗면의 돌기. 입력은 왼쪽, 출력은 오른쪽 줄
 function portOffset(def, side, portId) {
   const list = def[side];
   const i = list.findIndex((p) => p.id === portId);
-  const z = list.length === 1 ? 0 : (i - (list.length - 1) / 2) * 0.62;
-  return new THREE.Vector3(side === 'ins' ? -BW / 2 - 0.2 : BW / 2 + 0.2, BH / 2, z);
+  const z = list.length === 1 ? 0 : (i - (list.length - 1) / 2) * 0.5;
+  return new THREE.Vector3(side === 'ins' ? -CELL_R * 0.5 : CELL_R * 0.5, CELL_H / 2 + 0.04, z);
 }
 
+// 양자 뉴런은 셀 안에 들어 있다: 투명한 결정 속 블로흐 구
 function makeBloch(group) {
   const holder = new THREE.Group();
-  holder.position.set(0, BH + 0.8, 0);
-  holder.add(new THREE.Mesh(new THREE.SphereGeometry(0.45, 16, 10), new THREE.MeshBasicMaterial({ color: 0x9fe8ff, wireframe: true, transparent: true, opacity: 0.25 })));
+  holder.add(new THREE.Mesh(new THREE.SphereGeometry(0.4, 16, 10), new THREE.MeshBasicMaterial({ color: 0x9fe8ff, wireframe: true, transparent: true, opacity: 0.3 })));
   const arrow = new THREE.Group();
-  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 1, 6).translate(0, 0.5, 0), new THREE.MeshBasicMaterial({ color: 0xffffff }));
-  const head = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.18, 10), new THREE.MeshBasicMaterial({ color: 0xfff1a8 }));
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1, 6).translate(0, 0.5, 0), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  const head = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.16, 10), new THREE.MeshBasicMaterial({ color: 0xfff1a8 }));
   arrow.add(shaft, head);
   holder.add(arrow);
   group.add(holder);
@@ -136,9 +92,12 @@ function makeBloch(group) {
 function buildBlockView(b) {
   const def = BLOCK_TYPES[b.type];
   const group = new THREE.Group();
-  const body = new THREE.Mesh(unitCell, new THREE.MeshStandardMaterial({ color: def.color, emissive: def.color, emissiveIntensity: 0.15, roughness: 0.25, metalness: 0.2, flatShading: true }));
+  const body = new THREE.Mesh(cellGeo, new THREE.MeshPhysicalMaterial({
+    color: def.color, emissive: def.color, emissiveIntensity: 0.15, roughness: 0.15, clearcoat: 1,
+    transparent: true, opacity: 0.68, flatShading: true,
+  }));
   body.userData = { kind: 'block', id: b.id };
-  group.add(body);
+  group.add(body, new THREE.LineSegments(cellEdges, new THREE.LineBasicMaterial({ color: 0xe8fbff, transparent: true, opacity: 0.55 })));
   pickBodies.push(body);
 
   const terms = [];
@@ -158,7 +117,7 @@ function buildBlockView(b) {
   el.className = 'label label-block';
   el.innerHTML = '<span class="name"></span><span class="out"></span>';
   const label = new CSS2DObject(el);
-  label.position.set(0, BH + 0.05, BD / 2 + 0.1);
+  label.position.set(0, -CELL_H / 2, CELL_R * 0.6);
   label.center.set(0.5, 0);
   group.add(label);
 
@@ -174,47 +133,63 @@ function disposeView(v) {
   v.body.material.dispose();
 }
 
-// --- 연결선 ----------------------------------------------------------------------
-const wireViews = new Map();   // wireId -> { mesh, curve, type }
+// --- 접합면: 연결된 두 셀 사이에서 빛나는 판 -------------------------------------------
+// 이웃한 셀이면 맞닿은 면 위에, 떨어져 있으면 결정 속 두 셀 사이에 놓인다. 신호는 결정 속을 빛으로 지나간다.
+const seamGeo = new THREE.CylinderGeometry(0.62, 0.62, 0.07, 6);
+const seamViews = new Map();   // wireId -> { mesh, type, from, to, curve }
 const pickWires = [];
 
-function termWorld(blockId, side, portId) {
-  const b = program.blocks.find((x) => x.id === blockId);
-  return portOffset(BLOCK_TYPES[b.type], side, portId).add(new THREE.Vector3(b.x, b.y, b.z));
-}
-
-// 연결은 결정의 모서리: 단자와 단자를 곧게 잇는다
-const wireCurve = (a, b) => new THREE.LineCurve3(a, b);
-
-function rebuildWires() {
-  for (const v of wireViews.values()) { scene.remove(v.mesh); v.mesh.geometry.dispose(); v.mesh.material.dispose(); }
-  wireViews.clear();
+function rebuildSeams() {
+  for (const v of seamViews.values()) { scene.remove(v.mesh); v.mesh.material.dispose(); }
+  seamViews.clear();
   pickWires.length = 0;
   for (const w of program.wires) {
     const b = program.blocks.find((x) => x.id === w.from.block);
     const type = BLOCK_TYPES[b.type].outs.find((p) => p.id === w.from.port).type;
-    const curve = wireCurve(termWorld(w.from.block, 'outs', w.from.port), termWorld(w.to.block, 'ins', w.to.port));
     const color = SIGNALS[type].color;
-    const mesh = new THREE.Mesh(
-      new THREE.TubeGeometry(curve, 1, 0.06, 8, false),
-      new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.4, transparent: true, opacity: 0.9 }),
-    );
+    const mesh = new THREE.Mesh(seamGeo, new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.4, transparent: true, opacity: 0.9 }));
     mesh.userData = { kind: 'wire', id: w.id };
     scene.add(mesh);
     pickWires.push(mesh);
-    wireViews.set(w.id, { mesh, curve, type });
+    seamViews.set(w.id, { mesh, type, from: w.from.block, to: w.to.block, curve: new THREE.LineCurve3(new THREE.Vector3(), new THREE.Vector3()) });
   }
 }
 
-// 신호가 흐르는 연결선 위의 펄스
+// 격자점을 화면 위치로: 셀, 접합면, 신호 경로를 함께 옮긴다 (4D 는 매 프레임)
+const UP = new THREE.Vector3(0, 1, 0);
+function placeAll() {
+  for (const [id, v] of views) {
+    const p = project(sites.get(id) ?? [0, 0, 0, 0], hyperAngle);
+    v.group.position.set(p.x, p.y, p.z);
+    v.group.scale.setScalar(p.scale);
+  }
+  for (const v of seamViews.values()) {
+    const a = views.get(v.from).group.position, b = views.get(v.to).group.position;
+    v.curve.v1.copy(a);
+    v.curve.v2.copy(b);
+    v.mesh.position.lerpVectors(a, b, 0.5);
+    const dir = b.clone().sub(a);
+    if (dir.lengthSq() > 1e-6) v.mesh.quaternion.setFromUnitVectors(UP, dir.normalize());
+    v.mesh.scale.setScalar(views.get(v.from).group.scale.x);
+  }
+}
+
+function termWorld(blockId, side, portId) {
+  const b = program.blocks.find((x) => x.id === blockId);
+  const g = views.get(blockId).group;
+  return portOffset(BLOCK_TYPES[b.type], side, portId).multiplyScalar(g.scale.x).add(g.position);
+}
+
+// 신호가 흐르는 접합을 지나는 빛
 const PULSES = 3, MAX_PULSES = 1800;
 const pulseGeo = new THREE.BufferGeometry();
 pulseGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(MAX_PULSES * 3), 3));
-const pulses = new THREE.Points(pulseGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.22, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+const pulses = new THREE.Points(pulseGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.24, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, depthTest: false }));
 pulses.frustumCulled = false;
+pulses.renderOrder = 2;
 scene.add(pulses);
 
-// 단자를 끌 때 따라오는 임시 선
+// 단자를 끌 때 따라오는 임시 선 (잇는 동안만 보인다)
 const ghost = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6 }));
 ghost.visible = false;
 scene.add(ghost);
@@ -225,10 +200,10 @@ function refresh(save = true) {
   for (const [id, v] of views) if (!ids.has(id)) { disposeView(v); views.delete(id); }
   for (const b of program.blocks) {
     if (!views.has(b.id)) views.set(b.id, buildBlockView(b));
-    views.get(b.id).group.position.set(b.x, b.y, b.z);
   }
-  shapeCrystal();
-  rebuildWires();
+  sites = layout(program, dim());
+  rebuildSeams();
+  placeAll();
   result = evaluate(program, env);
   if (save) delete program.nobase;   // 손대면 더 이상 초기 상태가 아니다
 
@@ -256,6 +231,7 @@ function refresh(save = true) {
   }
 
   nobaseEl.hidden = !program.nobase || !isActive(view);
+  renderDimension();
   renderPaletteStatus();
   renderInfo();
   hooks.changed(snapshot());
@@ -302,14 +278,14 @@ function buildPalette() {
           h('strong', { textContent: def.label }),
           h('div', { className: 'terms' }, ...termDots(def.ins), h('span', { className: 'arrow', textContent: '→' }), ...termDots(def.outs))));
       item.querySelector('.chip').style.background = hex(def.color);
-      item.addEventListener('click', () => addBlock(type, freeSpot()));
+      item.addEventListener('click', () => addBlock(type));
       item.addEventListener('dragstart', (e) => e.dataTransfer.setData('text/plain', `block:${type}`));
       return item;
     })));
   const clear = h('button', { className: 'clear', textContent: '↺ 초기 구조로 (No Base)' });
   clear.addEventListener('click', () => {
     if (!program.nobase && confirm('지금 조립을 지우고 Topology 초기 시스템 구조(No Base)로 돌아갈까요?')) {
-      program = baseProgram({ path: hooks.dataPlaces()[0]?.path });
+      program = { ...baseProgram({ path: hooks.dataPlaces()[0]?.path }), dim: dim() };
       select(null);
       refresh(false);
       hooks.save(program);
@@ -318,7 +294,7 @@ function buildPalette() {
   });
   paletteEl.replaceChildren(
     h('div', { className: 'palette-title', textContent: '양자 뉴런 블록' }),
-    h('div', { className: 'palette-sub', textContent: '기능 모듈을 꺼내 놓고 같은 색 단자끼리 이으세요' }),
+    h('div', { className: 'palette-sub', textContent: '기능 모듈을 꺼내면 결정에 맞물립니다. 윗면의 같은 색 단자끼리 이으세요' }),
     ...sections,
     h('div', { className: 'palette-status' }),
     clear,
@@ -332,22 +308,38 @@ function renderPaletteStatus() {
     + (result.system === null ? '— (Topology 블록에 아직 닿지 않음)' : `${Math.round(result.system * 100)}%`);
 }
 
-// 카메라가 보는 곳 근처의 빈자리
-function freeSpot() {
-  const base = cur.target.clone();
-  for (let r = 0; r < 12; r++) {
-    for (let k = 0; k < 6; k++) {
-      const p = new THREE.Vector3(base.x + (k % 3) * 4.4 - 4.4, 0, base.z + Math.floor(k / 3) * 3 + r * 3 - 2);
-      if (!program.blocks.some((b) => Math.abs(b.x - p.x) < 3.6 && Math.abs(b.z - p.z) < 2.6)) return p;
-    }
-  }
-  return base;
+// --- 차원 선택: 컴퓨터가 보여 줄 수 있는 가장 높은 차원(4D)부터 0D 까지 ----------------------------
+function buildDimension() {
+  dimEl.replaceChildren(
+    h('div', { className: 'dims-row' }, ...DIMENSIONS.map((x) => {
+      const b = h('button', { textContent: x.label, title: `${x.name} — ${x.note}` });
+      b.dataset.d = x.d;
+      b.addEventListener('click', () => setDimension(x.d));
+      return b;
+    })),
+    h('div', { className: 'dims-note' }),
+  );
 }
 
-function addBlock(type, at) {
-  const b = createBlock(type, program, Math.round(at.x * 2) / 2, Math.round(at.z * 2) / 2, { path: hooks.dataPlaces()[0]?.path });
-  // 같은 차원의 블록이 있으면 그 층에 놓는다
-  b.y = program.blocks.find((x) => BLOCK_TYPES[x.type].group === BLOCK_TYPES[type].group)?.y ?? 0;
+function renderDimension() {
+  const cur = DIMENSIONS.find((x) => x.d === dim());
+  dimEl.querySelectorAll('button').forEach((b) => b.classList.toggle('on', Number(b.dataset.d) === cur.d));
+  const note = dimEl.querySelector('.dims-note');
+  if (note) note.textContent = `${cur.label} ${cur.name} — ${cur.note}`;
+}
+
+export function setDimension(d) {
+  if (d === dim()) return;
+  program.dim = d;
+  hyperAngle = 0;
+  refresh(false);   // 차원은 조립이 아니라 사양이다 — No Base 는 그대로
+  hooks.save(program);
+  overview();
+}
+
+// 새 블록은 결정이 알아서 빈 격자점에 맞물린다
+function addBlock(type) {
+  const b = createBlock(type, program, 0, 0, { path: hooks.dataPlaces()[0]?.path });
   program.blocks.push(b);
   select({ kind: 'block', id: b.id });
   refresh();
@@ -358,8 +350,7 @@ canvas.addEventListener('drop', (e) => {
   const data = e.dataTransfer.getData('text/plain');
   if (!isActive(view) || !data.startsWith('block:')) return;
   e.preventDefault();
-  const p = boardPoint(e);
-  if (p) addBlock(data.slice(6), p);
+  addBlock(data.slice(6));
 });
 
 // --- 선택과 정보 패널 -------------------------------------------------------------
@@ -384,7 +375,7 @@ function renderInfo() {
     const name = (id) => program.blocks.find((b) => b.id === id).name;
     infoEl.hidden = false;
     infoEl.replaceChildren(
-      h('div', { className: 'kind', textContent: `연결 · ${SIGNALS[wireViews.get(w.id)?.type ?? 'data'].label} 신호` }),
+      h('div', { className: 'kind', textContent: `접합 · ${SIGNALS[seamViews.get(w.id)?.type ?? 'data'].label} 신호` }),
       h('strong', { textContent: `${name(w.from.block)} → ${name(w.to.block)}` }),
       h('p', { className: 'dim', textContent: result.live.has(w.id) ? '신호가 흐르는 중' : '앞쪽 블록이 대기 중이라 아직 신호가 없다' }),
       h('div', { className: 'actions' }, button('연결 끊기', () => { program.wires = program.wires.filter((x) => x !== w); select(null); refresh(); })),
@@ -427,6 +418,14 @@ function renderInfo() {
   for (const f of hooks.folders(def.concept)) links.push(button(`📁 ${f.name}`, () => hooks.openFolder(f.path), f.path));
   const desc = NODES.find((n) => n.id === def.concept)?.desc;
 
+  // 이 셀의 접합: 누르면 끊는다
+  const blockName = (id) => program.blocks.find((x) => x.id === id)?.name;
+  const joins = program.wires.filter((w) => w.from.block === b.id || w.to.block === b.id).map((w) => {
+    const out = w.from.block === b.id;
+    return button(`${out ? '→' : '←'} ${blockName(out ? w.to.block : w.from.block)} ✕`,
+      () => { program.wires = program.wires.filter((x) => x !== w); refresh(); }, '이 접합 끊기');
+  });
+
   infoEl.replaceChildren(
     h('div', { className: 'kind', textContent: `${def.group} · ${def.label} 블록` }),
     name,
@@ -435,6 +434,7 @@ function renderInfo() {
     ...(desc ? [h('p', { className: 'dim', textContent: desc })] : []),
     ...params,
     h('div', { className: `live status-${st.status}`, textContent: lines.join('\n') }),
+    ...(joins.length ? [h('div', { className: 'dim', textContent: '접합 (누르면 끊기)' }), h('div', { className: 'actions' }, ...joins)] : []),
     ...(links.length ? [h('div', { className: 'dim', textContent: 'Topology 환경' }), h('div', { className: 'actions' }, ...links)] : []),
     h('div', { className: 'actions' }, button('블록 지우기', () => { removeBlock(program, b.id); select(null); refresh(); })),
   );
@@ -449,22 +449,21 @@ export function overview() {
   goal.sph.setFromVector3(HOME.offset);
   if (!program.blocks.length) { goal.target.copy(HOME.target); return; }
   const box = new THREE.Box3();
-  program.blocks.forEach((b) => box.expandByPoint(new THREE.Vector3(b.x, b.y, b.z)));
+  views.forEach((v) => box.expandByPoint(v.group.position));
   goal.target.copy(box.getCenter(new THREE.Vector3()));
-  goal.sph.radius = Math.max(20, box.getSize(new THREE.Vector3()).length() * 1.2);
+  goal.sph.radius = Math.max(14, box.getSize(new THREE.Vector3()).length() * 1.3 + 8);   // 셀 크기만큼 여유
   // 왼쪽 팔레트에 가리지 않게 중심을 조금 왼쪽으로 잡아 블록이 화면 오른쪽에 오게 한다
   goal.target.x -= goal.sph.radius * 0.17;
 }
 
 // --- 마우스 ---------------------------------------------------------------------
-// 블록 드래그 = 옮기기, 단자 드래그 = 잇기, 빈 곳 왼쪽 드래그 = 회전, 오른쪽 드래그 = 이동,
+// 블록 자리는 결정이 정한다. 단자 드래그 = 잇기, 왼쪽 드래그 = 회전, 오른쪽 드래그 = 이동,
 // 스크롤 = 다가가기/물러나기, 클릭 = 선택, Delete = 선택한 블록·연결 지우기.
 const raycaster = new THREE.Raycaster();
 function ray(e) {
   raycaster.setFromCamera(new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1), camera);
   return raycaster;
 }
-// 블록은 자기 층(y) 의 수평면 위에서 움직인다
 function boardPoint(e, y = 0) {
   return ray(e).ray.intersectPlane(y ? new THREE.Plane(BOARD.normal, -y) : BOARD, new THREE.Vector3());
 }
@@ -501,14 +500,7 @@ canvas.addEventListener('pointerdown', (e) => {
     highlightTerms(term);
     return;
   }
-  const body = pickAt(e, pickBodies);
-  if (body) {
-    const b = program.blocks.find((x) => x.id === body.id);
-    const p = boardPoint(e, b.y) ?? new THREE.Vector3(b.x, b.y, b.z);
-    drag = { mode: 'block', block: b, dx: b.x - p.x, dz: b.z - p.z, moved: 0 };
-    return;
-  }
-  drag = { mode: 'orbit', moved: 0 };
+  drag = { mode: 'orbit', moved: 0, block: pickAt(e, pickBodies)?.id };
 });
 
 canvas.addEventListener('pointermove', (e) => {
@@ -516,7 +508,7 @@ canvas.addEventListener('pointermove', (e) => {
   if (!drag) {
     const t = pickAt(e, pickTerms);
     const b = !t && pickAt(e, pickBodies);
-    canvas.style.cursor = t ? 'crosshair' : b ? 'move' : 'grab';
+    canvas.style.cursor = t ? 'crosshair' : b ? 'pointer' : 'grab';
     return;
   }
   drag.moved += Math.abs(e.movementX) + Math.abs(e.movementY);
@@ -530,22 +522,14 @@ canvas.addEventListener('pointermove', (e) => {
     goal.target.addScaledVector(right, -e.movementX * k).addScaledVector(fwd, e.movementY * k);
   } else if (drag.mode === 'zoom') {
     goal.sph.radius = THREE.MathUtils.clamp(goal.sph.radius * Math.exp(e.movementY * 0.01), 5, 120);
-  } else if (drag.mode === 'block') {
-    const p = boardPoint(e, drag.block.y);
-    if (!p) return;
-    drag.block.x = Math.round((p.x + drag.dx) * 2) / 2;
-    drag.block.z = Math.round((p.z + drag.dz) * 2) / 2;
-    views.get(drag.block.id).group.position.set(drag.block.x, drag.block.y, drag.block.z);
-    shapeCrystal();
-    rebuildWires();
   } else if (drag.mode === 'wire') {
     const t = pickAt(e, pickTerms);
     hoverTerm = compatible(drag.from, t) ? t : null;
     const a = termWorld(drag.from.id, drag.from.side, drag.from.port);
-    const b = hoverTerm ? termWorld(hoverTerm.id, hoverTerm.side, hoverTerm.port) : (boardPoint(e, a.y - BH / 2) ?? a.clone()).setY(a.y);
+    const b = hoverTerm ? termWorld(hoverTerm.id, hoverTerm.side, hoverTerm.port) : (boardPoint(e, a.y) ?? a.clone());
     const [s, d] = drag.from.side === 'outs' ? [a, b] : [b, a];
     ghost.geometry.dispose();
-    ghost.geometry = new THREE.TubeGeometry(wireCurve(s, d), 30, 0.05, 6, false);
+    ghost.geometry = new THREE.TubeGeometry(new THREE.LineCurve3(s, d), 1, 0.05, 6, false);
     ghost.material.color.set(SIGNALS[drag.from.type].color);
     ghost.visible = true;
   }
@@ -566,12 +550,9 @@ canvas.addEventListener('pointerup', (e) => {
       select({ kind: 'block', id: d.from.id });
     }
     hoverTerm = null;
-  } else if (d.mode === 'block') {
-    if (d.moved < 4) select({ kind: 'block', id: d.block.id });
-    else refresh();
   } else if (d.mode === 'orbit' && d.moved < 4) {
     const w = pickAt(e, pickWires);
-    select(w ? { kind: 'wire', id: w.id } : null);
+    select(d.block ? { kind: 'block', id: d.block } : w ? { kind: 'wire', id: w.id } : null);
   }
 });
 
@@ -579,8 +560,7 @@ canvas.addEventListener('dblclick', (e) => {
   if (!isActive(view)) return;
   const body = pickAt(e, pickBodies);
   if (body) {
-    const b = program.blocks.find((x) => x.id === body.id);
-    goal.target.set(b.x, b.y, b.z);
+    goal.target.copy(views.get(body.id).group.position);
     goal.sph.radius = 10;
   } else overview();
 });
@@ -617,14 +597,15 @@ function update(dt, t) {
   camera.position.setFromSpherical(cur.sph).add(cur.target);
   camera.lookAt(cur.target);
 
-  // 결정은 시스템 값만큼 공명한다
-  const life = result.system ?? 0;
-  ridges.material.opacity = 0.18 + life * (0.22 + 0.12 * Math.sin(t * 2.2));
-  facets.material.opacity = 0.03 + life * 0.04;
+  // 4D: 결정이 넷째 축 방향으로 흔들린다
+  if (dim() === 4) {
+    hyperAngle = 0.3 * Math.sin(t * 0.35);
+    placeAll();
+  }
 
   const arr = pulseGeo.attributes.position.array;
   let n = 0;
-  for (const [id, v] of wireViews) {
+  for (const [id, v] of seamViews) {
     if (!result.live.has(id)) continue;
     for (let p = 0; p < PULSES && n < MAX_PULSES; p++, n++) {
       v.curve.getPointAt((t * 0.45 + p / PULSES) % 1, tmp).toArray(arr, n * 3);
@@ -634,19 +615,19 @@ function update(dt, t) {
   pulseGeo.attributes.position.needsUpdate = true;
 
   for (const [id, v] of views) v.el.classList.toggle('selected', selected?.kind === 'block' && selected.id === id);
-  for (const [id, v] of wireViews) {
-    v.mesh.material.emissiveIntensity = selected?.kind === 'wire' && selected.id === id ? 1.4 : result.live.has(id) ? 0.5 : 0.08;
+  for (const [id, v] of seamViews) {
+    v.mesh.material.emissiveIntensity = selected?.kind === 'wire' && selected.id === id ? 1.6 : result.live.has(id) ? 0.6 + 0.3 * Math.sin(t * 3) : 0.08;
   }
 }
 
 const view = {
   scene, camera,
-  layers: [labels.domElement, hintEl, paletteEl],
+  layers: [labels.domElement, hintEl, paletteEl, dimEl],
   update,
   render: () => labels.render(scene, camera),
   resize: () => labels.setSize(innerWidth, innerHeight),
-  status: () => (program.nobase ? 'No Base'
-    : `블록 ${program.blocks.length} · 시스템 ${result.system === null ? '—' : `${Math.round(result.system * 100)}%`}`),
+  status: () => (program.nobase ? `No Base · ${dim()}D`
+    : `${dim()}D · 블록 ${program.blocks.length} · 시스템 ${result.system === null ? '—' : `${Math.round(result.system * 100)}%`}`),
 };
 registerView('diagram', view);
 onViewChange((name) => {
@@ -656,9 +637,11 @@ onViewChange((name) => {
 
 export function build(saved, initialEnv) {
   // 손대지 않은 No Base 는 지금의 초기 구조로 다시 만든다
-  program = saved.blocks.length && !saved.nobase ? saved : baseProgram({ path: hooks.dataPlaces()[0]?.path });
+  program = saved.blocks.length && !saved.nobase ? saved
+    : { ...baseProgram({ path: hooks.dataPlaces()[0]?.path }), ...(saved.dim !== undefined ? { dim: saved.dim } : {}) };
   env = initialEnv;
   buildPalette();
+  buildDimension();
   refresh(false);
   overview();
   cur.target.copy(goal.target);
