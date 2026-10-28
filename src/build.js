@@ -6,13 +6,12 @@
 import { outerBounds } from './field.js';
 
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-const key = (i) => `${i[0]},${i[1]},${i[2]}`;
+export const key = (i) => `${i[0]},${i[1]},${i[2]}`;
 const AXES = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
 
-// seeds: 블록 순서대로 씨앗 위치, size: 큐브 한 변(화면 단위), box: { min, max } 덮을 범위
+// seeds: 블록 순서대로 씨앗 위치, size: 큐브 한 변(화면 단위), box: { min, max } 덮을 범위, bounds: 바깥 경계 평면
 // -> { size, cells: [{ i: [ix,iy,iz], c: [x,y,z], owner }], at: Map(key -> cell 번호), counts: [블록별 큐브 수] }
-export function voxelize(seeds, size, box) {
-  const bounds = outerBounds(seeds);
+export function voxelize(seeds, size, box, bounds = outerBounds(seeds)) {
   const lo = [0, 1, 2].map((k) => Math.floor(box.min.getComponent(k) / size));
   const hi = [0, 1, 2].map((k) => Math.ceil(box.max.getComponent(k) / size));
   const cells = [], at = new Map(), counts = seeds.map(() => 0);

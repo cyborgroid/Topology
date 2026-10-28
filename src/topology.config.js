@@ -42,6 +42,7 @@ export const ANCHORS = [
 export const PHYSICAL = {
   unitMM: 10,   // 화면 1 = 10 mm
   voxelMM: 20,  // 조립 규격 큐브 한 변 (mm) — 영역을 이 큐브로 쌓는다
+  blockMM: 14,  // 양자 코어를 짜는 단위 블록 한 변 (mm)
   padMM: 1,     // 구리 패드 두께 (mm)
   materials: {
     '환경':        { name: '실리콘', density: 2.33 },     // g/cm³

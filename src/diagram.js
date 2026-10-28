@@ -6,8 +6,8 @@
 // 계산한다(λ^D). 연결은 선이 아니라 두 영역이 맞닿는 접합면이 빛나는 것이다. 영역 중심에 양자 뉴런 핵과 단자가 있다.
 // 폴더와 파일도 양자 아날로그 뉴런 블록이다: 블록 영역 안에서 같은 차원 법칙으로 다시 영역을 개척한다(영역 안의 영역).
 // 영역 안은 블록의 신호만큼 양자 에너지 장이 찬다. 씨앗은 질량이어서(physics.js) 블록을 끌면 회로가 유기체처럼 따라온다.
-// 블록 = 기기를 구동하고 회로를 완성하는 단위 — 개념 블록과 실제 부품의 중간(부품 쪽)인 '모듈'. 모듈마다 부품 번호(QM-xx),
-// 코어 바깥 면에 새겨진 기능면(parts.js), 맞닿은 면의 신호 규격 커넥터를 갖는다. 양자 코어(하나의 컴퓨터) 형태에서는
+// 블록 = 기기를 구동하고 회로를 완성하는 단위. 부품을 가져오지 않고 부품을 블록으로 짠다: 같은 단위 블록을 엮는 패턴이
+// 그 모듈의 기능을 드러낸다(parts.js) — 물리 모형도, 수학 다면체도 아닌 개념적인 블록 구조. 모듈마다 부품 번호(QM-xx). 양자 코어(하나의 컴퓨터) 형태에서는
 // 하나의 코어가 모든 것을 품는다: 가운데 양자 핵(QE 코어), 그 주위를 빈틈없이 채우는 모듈 조각(코어 외피 안의 보로노이 영역),
 // 맞닿은 면의 핀–소켓 결합부, 맞닿지 않은 연결의 내부 채널. 조립 상태는 절개도로 안을, 분해 보기는 조각이 끼워지는 방식을 보여 준다.
 // 블록을 끌어 다른 블록에 맞대면 접촉면으로 결합(조립)된다. 큐브 조립안(build.js)에서는 영역이 규격 큐브로 양자화되어
@@ -21,8 +21,9 @@ import { CONTROLS, NODES, PHYSICAL } from './topology.config.js';
 import { BLOCK_TYPES, SIGNALS, createBlock, canConnect, connect, removeBlock, evaluate, emptyProgram, baseProgram, quantumNeuron } from './blocks.js';
 import { DIM_LIMIT, DEFAULT_DIM, ratio, toSlider, fromSlider, seeds, pathSeeds, voronoi, inset, inradius, energy, flowOrder, coreBounds } from './field.js';
 import { Physics } from './physics.js';
-import { voxelize, contacts, facesBetween, route, layers } from './build.js';
-import { FEATURES, CONNECTORS, MATERIALS, buildFeature, buildConnector } from './parts.js';
+import { voxelize, contacts, facesBetween, route, layers, key as cellKey } from './build.js';
+import { PATTERNS } from './parts.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 
 renderer.localClippingEnabled = true;   // 코어 절개도
 
@@ -159,11 +160,6 @@ function disposeView(v) {
   v.terms.forEach((t) => pickTerms.splice(pickTerms.indexOf(t), 1));
   for (const m of [v.body, v.body.children[0]]) { m.geometry.dispose(); m.material.dispose(); }
   v.core.material.dispose();
-  if (v.feature) {
-    scene.remove(v.feature);
-    v.feature.traverse((o) => { if (o.isMesh) o.geometry.dispose(); });
-    v.featureAccent.dispose();
-  }
 }
 
 // 영역 개척: 신호 순서대로 씨앗에서 영역이 자라나 이웃 영역과 만나는 경계까지 넓어진다
@@ -440,6 +436,7 @@ function layoutCells(full) {
   fillEnergy(cells);
   buildVoxels();
   renderVoxels();
+  buildCoreBlocks();
   renderCore();
   placeDesignMarks();
 }
@@ -556,8 +553,8 @@ function applyBuildStep() {
 function applyForm() {
   const nid = nucleusOf();
   for (const v of views.values()) {
-    v.body.visible = mathForm() || coreForm();
-    v.core.visible = mathForm() || (coreForm() && v.id === nid);
+    v.body.visible = mathForm();   // 코어는 블록으로 짠다 (영역 다면체는 수학 형태에서만)
+    v.core.visible = mathForm();
     v.terms.forEach((t) => { t.visible = mathForm(); });   // 단자를 끌어 잇는 것은 수학 형태에서
     // 코어: 모듈은 꽉 찬 조각(조립 상태는 절개도로 안이 보인다), 핵 영역은 투명해 핵이 보인다. 수학: 유리 같은 영역
     const m = v.body.material, edge = v.body.children[0].material;
@@ -565,17 +562,15 @@ function applyForm() {
     Object.assign(m, { opacity: coreForm() ? (solid ? 0.92 : 0.18) : 0.42, depthWrite: solid, side: coreForm() ? THREE.DoubleSide : THREE.FrontSide,
       metalness: coreForm() ? 0.3 : 0, roughness: coreForm() ? 0.4 : 0.3,   // 코어: 가공한 부품 마감
       clippingPlanes: cutOn() ? CUT : null, clipIntersection: true });
-    if (v.featureAccent) Object.assign(v.featureAccent, { clippingPlanes: cutOn() ? CUT : null, clipIntersection: true, needsUpdate: true });
     Object.assign(edge, { clippingPlanes: cutOn() ? CUT : null, clipIntersection: true });
     m.needsUpdate = edge.needsUpdate = true;
   }
-  for (const mat of Object.values(MATERIALS)) Object.assign(mat, { clippingPlanes: cutOn() ? CUT : null, clipIntersection: true, needsUpdate: true });
-  energyField.visible = !cubeForm() && !(coreForm() && explode > 0.02);
+  energyField.visible = mathForm();
   cutWasOn = cutOn();
 }
 
 const FORMS = ['core', 'math', 'cube'];
-const FORM_NAMES = { core: '양자 코어 (핵 + 모듈)', math: '수학 (영역)', cube: '큐브 조립안' };
+const FORM_NAMES = { core: '양자 코어 (블록으로 짠 모듈)', math: '수학 (영역)', cube: '큐브 조립안' };
 function toggleForm() {
   program.form = FORMS[(FORMS.indexOf(formOf()) + 1) % FORMS.length];
   hooks.save(program);
@@ -583,26 +578,33 @@ function toggleForm() {
   buildPalette();
 }
 
-// --- 양자 코어 형태: 하나의 코어, 모듈 조각으로 조립 ------------------------------------------
-// 외피(26면 결정) 안을 모듈 조각(블록의 영역)이 빈틈없이 채우고, 가운데 핵 영역에 양자 뉴런 핵(블로흐 구)이 빛난다.
-// 연결된 두 모듈이 맞닿은 면에는 핀(출력 쪽)–소켓(입력 쪽) 결합부, 맞닿지 않은 연결은 핵 쪽으로 지나는 내부 채널.
-// 조립 상태에서는 카메라 쪽 1/8 을 잘라 낸 절개도로 안을, 분해 보기에서는 조각들이 핵에서 떨어져 끼워지는 방식을 보여 준다.
-const coreGroup = new THREE.Group();   // 외피와 내부 회로 (배치가 바뀔 때마다 다시 만든다)
-scene.add(coreGroup);
-const pickCables = [];
-let coreInfo = new Map();              // blockId -> { dist } (화면 단위)
-let coreCables = [];                   // [{ wire, kind: 'pin' | 'channel', length, type, at }]
+// --- 양자 코어 형태: 블록으로 짠 하나의 코어 -------------------------------------------
+// 핵을 중심으로 한 코어 외피 안을 단위 블록 칸으로 나누고(칸은 가장 가까운 모듈 씨앗에 속한다), 모듈마다 자기 패턴(parts.js)에
+// 맞는 칸에만 블록을 놓아 부품을 짠다. 연결된 모듈이 맞닿은 곳에는 신호 색 결합 블록, 떨어진 연결은 신호 색 블록을 줄지어 이은 채널.
+// 조립 상태는 카메라 쪽 1/8 의 블록을 빼 안을 보이고, 분해 보기는 모듈을 핵에서 떼어 낸다.
+const UNIT = () => PHYSICAL.blockMM / PHYSICAL.unitMM;   // 단위 블록 한 변 (화면 단위)
+const MAX_UNITS = 16000;
+const unitGeo = new RoundedBoxGeometry(1, 1, 1, 2, 0.16);
+const unitMesh = new THREE.InstancedMesh(unitGeo, new THREE.MeshStandardMaterial({ roughness: 0.45, metalness: 0.15 }), MAX_UNITS);
+const glowMesh = new THREE.InstancedMesh(unitGeo, new THREE.MeshBasicMaterial(), MAX_UNITS);   // 핵·결합·채널: 스스로 빛나는 블록
+unitMesh.count = glowMesh.count = 0;
+unitMesh.frustumCulled = glowMesh.frustumCulled = false;
+const coreGroup = new THREE.Group();   // 코어 외피 테두리
+scene.add(unitMesh, glowMesh, coreGroup);
+let unitOwner = [], glowOwner = [];   // 인스턴스 -> 모듈 id (집기)
+let coreBlocks = null;                 // { size, units, joints, counts }
+let coreInfo = new Map();              // blockId -> { dist }
+let coreSkin = null;                   // { area, box }
 let explode = 0, explodeGoal = 0;       // 분해 보기: 0 = 조립, 1 = 분해
 let explodeAnim = null;                 // { from, t0 } — 프레임이 느려도 실제 시간대로 움직인다
 let cutWasOn = null;
 const cutOn = () => coreForm() && explode < 0.02;   // 절개도는 조립 상태에서만
-const TRACE_R = { quantum: 0.09 };      // 내부 회로 굵기 (양자 회로가 가장 굵다)
-let coreSkin = null;                   // { area, box }
 const nucleusOf = () => program.blocks.find((b) => b.type === 'qe')?.id ?? null;
 // 부품 번호: 신호 순서대로 QM-01, QM-02 …
 const moduleCode = (id) => `QM-${String(flowOrder(program).indexOf(id) + 1).padStart(2, '0')}`;
-const SHARED = new Set(Object.values(MATERIALS));
 const CUT = [new THREE.Plane(), new THREE.Plane(), new THREE.Plane()];   // 절개 (세 평면의 교집합 쪽을 잘라 낸다)
+const AXIS = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+const DIRS = AXIS.flatMap((e) => [e, e.map((v) => -v)]);
 
 // 절개는 늘 카메라 쪽 1/8 — 핵을 지나는 세 평면
 function aimCut() {
@@ -627,73 +629,130 @@ function explodeOffset(id, center) {
   return d.multiplyScalar((explode * (0.6 * L + 3)) / L);
 }
 
-// 기능면: 모듈의 바깥 면(코어 외피 쪽, 없으면 가장 넓은 면)에 새긴다
-function placeFeature(b, v, offset) {
-  const faces = cellInfo.get(b.id)?.faces ?? [];
-  const outer = faces.filter((f) => f.j < 0);
-  const face = (outer.length ? outer : faces).reduce((best, f) => (!best || f.area > best.area ? f : best), null);
-  if (!face || !FEATURES[b.type]) return;
-  if (!v.feature) {
-    const color = BLOCK_TYPES[b.type].color;
-    v.featureAccent = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.5, roughness: 0.35 });
-    v.feature = buildFeature(b.type, v.featureAccent);
-    v.feature.traverse((o) => { if (o.isMesh) o.userData = { kind: 'block', id: b.id }; });
-    scene.add(v.feature);
-    Object.assign(v.featureAccent, { clippingPlanes: cutOn() ? CUT : null, clipIntersection: true });
-  }
-  const n = new THREE.Vector3(...face.normal);
-  v.feature.visible = true;
-  v.feature.position.fromArray(face.centroid).add(offset).addScaledVector(n, 0.02);
-  v.feature.quaternion.setFromUnitVectors(UP, n);
-  v.feature.scale.setScalar(THREE.MathUtils.clamp(Math.sqrt(face.area) * 0.33, 0.6, 3) * Math.max(v.grow ?? 1, 1e-3));
+// 칸을 나누고 패턴대로 블록을 고른다 (배치가 바뀔 때마다)
+function buildCoreBlocks() {
+  coreBlocks = null;
+  const nid = nucleusOf();
+  if (!coreForm() || !nid || !program.blocks.length || fieldBox.isEmpty()) return;
+  const pts = program.blocks.map((b) => phys.pos(b.id));
+  const center = phys.pos(nid);
+  const size = UNIT();
+  const grid = voxelize(pts, size, fieldBox, coreBounds(center, pts));
+  const cellAt = (p) => grid.at.get(cellKey(p.map((v) => Math.floor(v / size))));
+
+  // 연결: 맞닿았으면 두 씨앗 가운데에 가장 가까운 맞닿은 면 양쪽 칸 = 결합 블록, 아니면 칸을 따라 이은 채널 블록
+  const forced = new Map();   // 칸 번호 -> { kind, color }
+  const faces = contacts(grid);
+  const joints = program.wires.map((w) => {
+    const a = blockIndex(w.from.block), b = blockIndex(w.to.block);
+    const type = signalOf(w), color = SIGNALS[type].color;
+    const fs = facesBetween(faces, a, b);
+    if (fs.length) {
+      const mid = pts[a].map((v, i) => (v + pts[b][i]) / 2);
+      const f = fs.reduce((best, x) => (Math.hypot(...x.c.map((v, i) => v - mid[i])) < Math.hypot(...best.c.map((v, i) => v - mid[i])) ? x : best));
+      const e = AXIS[f.axis].map((v) => (v * size) / 2);
+      for (const p of [f.c.map((v, i) => v - e[i]), f.c.map((v, i) => v + e[i])]) {
+        const n = cellAt(p);
+        if (n !== undefined) forced.set(n, { kind: 'joint', color });
+      }
+      return { wire: w, kind: 'joint', type, at: f.c, units: 2 };
+    }
+    const path = route(grid, a, b) ?? [];
+    path.forEach((n) => forced.set(n, { kind: 'channel', color }));
+    return { wire: w, kind: 'channel', type, path: path.map((n) => grid.cells[n].c), units: path.length };
+  });
+
+  // 모듈마다 패턴에 맞는 칸에만 블록
+  const seedCell = pts.map((p) => p.map((v) => Math.floor(v / size)));
+  const outDir = pts.map((p) => {
+    const d = p.map((v, i) => v - center[i]);
+    const L = Math.hypot(...d);
+    return L > 1e-6 ? d.map((v) => v / L) : [0, 1, 0];
+  });
+  const units = [];
+  const counts = new Map(program.blocks.map((b) => [b.id, { body: 0, joint: 0 }]));
+  grid.cells.forEach((cell, n) => {
+    const b = program.blocks[cell.owner];
+    const f = forced.get(n);
+    if (f) {
+      units.push({ c: cell.c, owner: b.id, kind: f.kind, color: f.color });
+      counts.get(b.id).joint++;
+      return;
+    }
+    const d = cell.i.map((v, i) => v - seedCell[cell.owner][i]);
+    const r = Math.hypot(...d);
+    let surface = false, border = false;
+    for (const e of DIRS) {
+      const m = grid.at.get(cellKey(cell.i.map((v, i) => v + e[i])));
+      if (m === undefined) surface = true;
+      else if (grid.cells[m].owner !== cell.owner) border = true;
+    }
+    const axial = d[0] * outDir[cell.owner][0] + d[1] * outDir[cell.owner][1] + d[2] * outDir[cell.owner][2];
+    const c = { d, r, surface, border, axial, radial: Math.sqrt(Math.max(0, r * r - axial * axial)) };
+    const pat = PATTERNS[b.type];
+    if (pat && !pat.keep(c) && r > 0.5) return;   // 씨앗 칸은 늘 남긴다
+    units.push({ c: cell.c, owner: b.id, kind: pat?.glow?.(c) ? 'glow' : 'body' });
+    counts.get(b.id).body++;
+  });
+  coreBlocks = { size, units, joints, counts };
 }
 
+// 블록을 놓는다 (분해 보기·절개도·상태 색)
 function renderCore() {
-  coreGroup.traverse((o) => {
-    if (!o.isMesh && !o.isLineSegments) return;
-    o.geometry.dispose();
-    if (!SHARED.has(o.material)) o.material.dispose();
-  });
+  coreGroup.traverse((o) => { if (o.geometry) { o.geometry.dispose(); o.material.dispose(); } });
   coreGroup.clear();
-  pickCables.length = 0;
-  coreCables = [];
   coreInfo = new Map();
   coreSkin = null;
   for (const sv of seamViews.values()) sv.cable = null;
+  for (const v of views.values()) { v.core.scale.setScalar(1); if (v.bloch) v.bloch.holder.scale.setScalar(1.6); }
+  const on = coreForm() && !!coreBlocks;
+  unitMesh.visible = glowMesh.visible = on;
+  if (!on) { unitMesh.count = glowMesh.count = 0; return; }
   const nid = nucleusOf();
-  const on = coreForm() && program.blocks.length > 0 && !!nid;
-  for (const v of views.values()) {   // 핵: 핵 영역 안에서 커진 양자 뉴런 핵과 블로흐 구
-    v.core.scale.setScalar(1);
-    if (v.bloch) v.bloch.holder.scale.setScalar(1.6);
-  }
-  for (const v of views.values()) if (v.feature) v.feature.visible = on;
-  if (!on) return;
   const center = new THREE.Vector3().fromArray(phys.pos(nid));
-  for (const b of program.blocks) coreInfo.set(b.id, { dist: center.distanceTo(new THREE.Vector3().fromArray(phys.pos(b.id))) });
-
-  const nv = views.get(nid);
-  const r = Math.max(0.5, inradius(phys.pos(nid), cellPlanes.get(nid) ?? []));
-  coreInfo.get(nid).size = r * 0.8;
-  nv.core.scale.setScalar(r * 0.9);
-  if (nv.bloch) nv.bloch.holder.scale.setScalar(r * 1.5);
-
-  // 모듈 조각 자리 (분해 보기면 바깥으로)
   const off = new Map(program.blocks.map((b) => [b.id, explodeOffset(b.id, center)]));
   for (const b of program.blocks) {
-    const v = views.get(b.id), o = off.get(b.id);
-    v.body.position.fromArray(phys.pos(b.id)).add(o);
-    v.group.position.fromArray(phys.pos(b.id)).add(o);
-    if (b.id !== nid) {   // 분해할수록 조각이 비쳐 맞닿은 면의 커넥터가 드러난다
-      v.body.material.opacity = 0.92 - 0.32 * explode;
-      v.body.material.depthWrite = explode < 0.3;
-      placeFeature(b, v, o);
+    coreInfo.set(b.id, { dist: center.distanceTo(new THREE.Vector3().fromArray(phys.pos(b.id))) });
+    views.get(b.id).group.position.fromArray(phys.pos(b.id)).add(off.get(b.id));   // 이름표는 모듈을 따라
+  }
+  const nv = views.get(nid);
+  if (nv.bloch) nv.bloch.holder.scale.setScalar(coreBlocks.size * 2.2);   // 핵의 양자 상태
+
+  const tint = new Map(program.blocks.map((b) => {
+    const st = result.state.get(b.id);
+    return [b.id, new THREE.Color(st?.status === 'error' ? 0xa83a3a : st?.status === 'ok' ? BLOCK_TYPES[b.type].color : 0x4a5866)];
+  }));
+  const m = new THREE.Matrix4(), p = new THREE.Vector3(), col = new THREE.Color();
+  const s = coreBlocks.size * 0.92;
+  let nu = 0, ng = 0;
+  unitOwner = [];
+  glowOwner = [];
+  for (const u of coreBlocks.units) {
+    p.fromArray(u.c);
+    if (inCut(p)) continue;
+    p.add(off.get(u.owner));
+    m.makeScale(s, s, s).setPosition(p);
+    if (u.kind === 'body') {
+      if (nu >= MAX_UNITS) continue;
+      unitMesh.setMatrixAt(nu, m);
+      unitMesh.setColorAt(nu, tint.get(u.owner));
+      unitOwner[nu++] = u.owner;
+    } else {
+      if (ng >= MAX_UNITS) continue;
+      glowMesh.setMatrixAt(ng, m);
+      glowMesh.setColorAt(ng, u.kind === 'glow' ? col.copy(tint.get(u.owner)).lerp(new THREE.Color(0xffffff), 0.35) : col.set(u.color));
+      glowOwner[ng++] = u.owner;
     }
   }
-  const at = (id) => new THREE.Vector3().fromArray(phys.pos(id)).add(off.get(id));
-  const clip = cutOn() ? { clippingPlanes: CUT, clipIntersection: true } : {};
+  unitMesh.count = nu;
+  glowMesh.count = ng;
+  for (const im of [unitMesh, glowMesh]) {
+    im.instanceMatrix.needsUpdate = true;
+    if (im.instanceColor) im.instanceColor.needsUpdate = true;
+  }
 
-  // 외피: 모든 모듈을 감싸는 하나의 결정 몸체 (조립 상태에서만 보인다)
-  const all = [...cellInfo.values()].flatMap((c) => c.verts).map((q) => new THREE.Vector3(...q).sub(center).multiplyScalar(1.012).add(center));
+  // 외피: 하나의 코어를 감싸는 테두리 (조립 상태에서만)
+  const all = [...cellInfo.values()].flatMap((c) => c.verts).map((q) => new THREE.Vector3(...q));
   if (all.length >= 4) {
     const hull = new ConvexGeometry(all);
     const pos = hull.attributes.position.array;
@@ -705,89 +764,51 @@ function renderCore() {
     hull.computeBoundingBox();
     coreSkin = { area, box: hull.boundingBox.clone() };
     if (explode < 0.02) {
-      const skin = new THREE.Mesh(hull, new THREE.MeshPhysicalMaterial({
-        color: 0xbfd6e2, metalness: 0.3, roughness: 0.25, clearcoat: 1, transparent: true, opacity: 0.16, depthWrite: false, side: THREE.DoubleSide, ...clip,
-      }));
-      const rim = new THREE.LineSegments(new THREE.EdgesGeometry(hull, 1), new THREE.LineBasicMaterial({ color: 0xe8fbff, transparent: true, opacity: 0.6, ...clip }));
-      coreGroup.add(skin, rim);
-    } else hull.dispose();
+      coreGroup.add(new THREE.LineSegments(new THREE.EdgesGeometry(hull, 1),
+        new THREE.LineBasicMaterial({ color: 0xe8fbff, transparent: true, opacity: 0.35, clippingPlanes: CUT, clipIntersection: true })));
+    }
+    hull.dispose();
   }
 
-  // 결합부: 맞닿은 면 = 핀(출력 모듈)–소켓(입력 모듈), 맞닿지 않으면 핵 쪽으로 지나는 내부 채널
-  for (const w of program.wires) {
-    const type = signalOf(w), color = SIGNALS[type].color;
-    const A = at(w.from.block), B = at(w.to.block);
-    const face = contactFace(w);
-    const sv = seamViews.get(w.id);
-    if (face) {
-      const n = new THREE.Vector3(...face.normal);   // 출력 모듈에서 입력 모듈 쪽
-      const c = new THREE.Vector3(...face.centroid);
-      const pinAt = c.clone().add(off.get(w.from.block)), sockAt = c.clone().add(off.get(w.to.block));
-      // 커넥터 하우징: 출력 모듈 면에 수 커넥터(입력 쪽을 향함), 입력 모듈 면에 암 커넥터(출력 쪽을 향함)
-      const stripe = () => new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.7, ...clip });
-      const male = buildConnector(type, stripe(), true), female = buildConnector(type, stripe(), false);
-      male.position.copy(pinAt).addScaledVector(n, -0.3);
-      male.quaternion.setFromUnitVectors(UP, n);
-      female.position.copy(sockAt).addScaledVector(n, 0.3);
-      female.quaternion.setFromUnitVectors(UP, n.clone().negate());
-      for (const g of [male, female]) {
-        g.scale.setScalar(1.6);
-        g.traverse((m) => { if (m.isMesh) { m.userData = { kind: 'wire', id: w.id }; pickCables.push(m); } });
-        coreGroup.add(g);
-      }
-      const path = new THREE.CurvePath();
-      [A, pinAt, sockAt, B].reduce((p, q) => { if (p.distanceTo(q) > 1e-4) path.add(new THREE.LineCurve3(p, q)); return q; });
-      if (sv) sv.cable = path.curves.length ? path : null;
-      coreCables.push({ wire: w, kind: 'pin', type, at: face.centroid, length: A.distanceTo(c) + c.distanceTo(B), connector: CONNECTORS[type]?.name });
-    } else {
-      const mid = A.clone().lerp(B, 0.5).lerp(center, 0.45);
-      const curve = new THREE.QuadraticBezierCurve3(A, mid, B);
-      const trace = new THREE.Mesh(new THREE.TubeGeometry(curve, 40, TRACE_R[type] ?? 0.06, 8, false),
-        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.6, depthTest: false }));
-      trace.renderOrder = 3;
-      trace.userData = { kind: 'wire', id: w.id };
-      coreGroup.add(trace);
-      pickCables.push(trace);
-      if (sv) sv.cable = curve;
-      coreCables.push({ wire: w, kind: 'channel', type, length: curve.getLength() });
-    }
+  // 신호가 흐르는 길: 결합 블록 또는 채널 블록을 따라
+  for (const j of coreBlocks.joints) {
+    const sv = seamViews.get(j.wire.id);
+    if (!sv) continue;
+    const A = new THREE.Vector3().fromArray(phys.pos(j.wire.from.block)).add(off.get(j.wire.from.block));
+    const B = new THREE.Vector3().fromArray(phys.pos(j.wire.to.block)).add(off.get(j.wire.to.block));
+    const mids = j.kind === 'joint' ? [new THREE.Vector3(...j.at)] : j.path.map((q) => new THREE.Vector3(...q));
+    const path = new THREE.CurvePath();
+    [A, ...mids, B].reduce((a, b) => { if (a.distanceTo(b) > 1e-4) path.add(new THREE.LineCurve3(a, b)); return b; });
+    sv.cable = path.curves.length ? path : null;
   }
 }
 
-// 코어 설계도: 하나의 코어 — 외피, 핵, 모듈 조각, 결합부, 조립 순서
+// 코어 설계도: 블록으로 짠 하나의 코어 — 모듈(패턴·블록 수), 결합, 조립 순서
 function coreSheet() {
-  const u = PHYSICAL.unitMM;
+  const u = PHYSICAL.unitMM, unitCM3 = (PHYSICAL.blockMM / 10) ** 3;
   const nid = nucleusOf();
   const name = (id) => program.blocks[blockIndex(id)]?.name;
-  const joints = coreCables.map((c) => ({
-    from: c.wire.from, to: c.wire.to, from_name: name(c.wire.from.block), to_name: name(c.wire.to.block),
-    signal: SIGNALS[c.type].label, kind: c.kind === 'pin' ? '핀–소켓' : '내부 채널', connector: c.connector ?? '—',
-    at_mm: c.at ? c.at.map((v) => Math.round(v * u)) : null, length_mm: c.length * u,
-    delay_ps: (c.length * u * 1e-3) / (PHYSICAL.signalSpeed * C_LIGHT) * 1e12,
+  const joints = (coreBlocks?.joints ?? []).map((j) => ({
+    from: j.wire.from, to: j.wire.to, from_name: name(j.wire.from.block), to_name: name(j.wire.to.block),
+    signal: SIGNALS[j.type].label, kind: j.kind === 'joint' ? '결합 블록' : '채널 블록', units: j.units,
+    at_mm: j.at ? j.at.map((v) => Math.round(v * u)) : null,
   }));
   const modules = program.blocks.map((b) => {
-    const c = cellInfo.get(b.id), mat = materialOf(b);
-    const volume = c.volume * CM ** 3;
+    const mat = materialOf(b), cnt = coreBlocks?.counts.get(b.id) ?? { body: 0, joint: 0 };
+    const blocks = cnt.body + cnt.joint;
     return {
-      id: b.id, code: moduleCode(b.id), type: b.type, name: b.name, role: b.id === nid ? 'nucleus' : 'module', group: BLOCK_TYPES[b.type].group,
-      feature: b.id === nid ? '양자 핵' : FEATURES[b.type]?.name ?? '—',
-      concept: NODES.find((n) => n.id === BLOCK_TYPES[b.type].concept)?.desc ?? '',
-      material: mat.name, volume_cm3: volume, mass_g: volume * mat.density,
-      center_mm: phys.pos(b.id).map((v) => Math.round(v * u)),
-      distance_from_nucleus_mm: (coreInfo.get(b.id)?.dist ?? 0) * u,
-      faces: c.faces.filter((f) => f.j >= 0).length,
-      pins: joints.filter((j) => j.kind === '핀–소켓' && j.from.block === b.id).length,
-      sockets: joints.filter((j) => j.kind === '핀–소켓' && j.to.block === b.id).length,
+      id: b.id, code: moduleCode(b.id), type: b.type, name: b.name, role: b.id === nid ? 'nucleus' : 'module',
+      pattern: PATTERNS[b.type]?.name ?? '—', concept: NODES.find((n) => n.id === BLOCK_TYPES[b.type].concept)?.desc ?? '',
+      material: mat.name, blocks, joint_blocks: cnt.joint, volume_cm3: blocks * unitCM3, mass_g: blocks * unitCM3 * mat.density,
+      center_mm: phys.pos(b.id).map((v) => Math.round(v * u)), distance_from_nucleus_mm: (coreInfo.get(b.id)?.dist ?? 0) * u,
     };
   });
-  const total = modules.reduce((a, z) => a + z.volume_cm3, 0);
-  modules.forEach((z) => { z.share = z.volume_cm3 / (total || 1); });
-  // 조립 순서: 핵에서 가까운 모듈부터 끼운다. 단계마다 이미 끼운 모듈과 맞물리는 결합부
+  // 조립 순서: 핵에서 가까운 모듈부터. 단계마다 이미 짠 모듈과 결합하는 곳
   const order = [...modules].sort((a, b) => a.distance_from_nucleus_mm - b.distance_from_nucleus_mm);
   const placed = new Set();
   const assembly = order.map((m, i) => {
-    const mates = joints.filter((j) => j.kind === '핀–소켓' && ((j.from.block === m.id && placed.has(j.to.block)) || (j.to.block === m.id && placed.has(j.from.block))))
-      .map((j) => `${j.from.block === m.id ? j.to_name : j.from_name} (${j.signal})`);
+    const mates = joints.filter((j) => (j.from.block === m.id && placed.has(j.to.block)) || (j.to.block === m.id && placed.has(j.from.block)))
+      .map((j) => `${j.from.block === m.id ? j.to_name : j.from_name} (${j.signal}${j.kind === '채널 블록' ? ' 채널' : ''})`);
     placed.add(m.id);
     return { step: i + 1, module: `${m.code} ${m.name}`, mates };
   });
@@ -795,11 +816,11 @@ function coreSheet() {
   const mass = modules.reduce((a, z) => a + z.mass_g, 0);
   const com = [0, 1, 2].map((i) => modules.reduce((a, z) => a + z.center_mm[i] * z.mass_g, 0) / (mass || 1));
   return {
-    name: 'Quantum Analog Neuron Core', version: 5, form: 'core', created: new Date().toISOString(), unit: 'mm', dimension: dim(),
-    assumptions: PHYSICAL,
-    core: { shell: '26면 결정 외피', envelope_mm: { w: size.x, h: size.y, d: size.z }, skin_area_cm2: (coreSkin?.area ?? 0) * CM ** 2,
-      volume_cm3: total, mass_g: mass, center_of_mass_mm: com },
-    nucleus: nid ? { block: nid, name: name(nid), concept: '양자 뉴런 핵 — 데이터를 중첩 상태로 연다', size_mm: (coreInfo.get(nid)?.size ?? 0) * 2 * u } : null,
+    name: 'Quantum Analog Neuron Core', version: 6, form: 'core', created: new Date().toISOString(), unit: 'mm', dimension: dim(),
+    assumptions: PHYSICAL, unit_block_mm: PHYSICAL.blockMM,
+    core: { envelope_mm: { w: size.x, h: size.y, d: size.z }, blocks: modules.reduce((a, m) => a + m.blocks, 0),
+      volume_cm3: modules.reduce((a, m) => a + m.volume_cm3, 0), mass_g: mass, center_of_mass_mm: com },
+    nucleus: nid ? { block: nid, name: name(nid), pattern: PATTERNS.qe.name } : null,
     envelope_mm: { w: size.x, h: size.y, d: size.z }, center_of_mass_mm: com,
     modules, joints, assembly,
   };
@@ -817,21 +838,21 @@ function renderCoreDesign() {
   });
   const close = h('button', { textContent: '✕' });
   close.addEventListener('click', () => toggleDesign(false));
-  const pins = d.joints.filter((j) => j.kind === '핀–소켓').length;
+  const jb = d.joints.filter((j) => j.kind === '결합 블록').length;
   designEl.replaceChildren(
-    h('div', { className: 'design-head' }, h('strong', { textContent: '양자 코어 — 모듈 조립 설계' }), close),
-    h('div', { className: 'dim', textContent: '코어 하나를 모듈로 나눠 조립한다. 모듈 = 블록의 영역 모양 조각 + 바깥 면의 기능면 + 맞닿은 면의 신호 규격 커넥터(수 → 암). 가정값은 topology.config.js 의 PHYSICAL.' }),
+    h('div', { className: 'design-head' }, h('strong', { textContent: '양자 코어 — 블록으로 짠 모듈' }), close),
+    h('div', { className: 'dim', textContent: `부품을 가져오지 않고 블록으로 짠다: 한 변 ${d.unit_block_mm} mm 단위 블록을 모듈마다 고유한 패턴으로 엮어 기능을 드러낸다. 맞닿은 곳은 결합 블록, 떨어진 곳은 채널 블록. 가정값은 topology.config.js 의 PHYSICAL.` }),
     h('div', { className: 'live', textContent: [
-      `코어: ${d.core.shell} · W ${fmt(d.core.envelope_mm.w, 0)} × H ${fmt(d.core.envelope_mm.h, 0)} × D ${fmt(d.core.envelope_mm.d, 0)} mm · 부피 ${fmt(d.core.volume_cm3)} cm³ · 질량 ${fmt(d.core.mass_g)} g`,
-      d.nucleus ? `양자 핵: ${d.nucleus.name} — ${d.nucleus.concept}` : '양자 핵 없음 — QE 코어 블록을 꺼내면 코어의 핵이 된다',
-      `모듈 ${d.modules.length} · 결합부 ${d.joints.length}: 핀–소켓 ${pins} · 내부 채널 ${d.joints.length - pins}`,
+      `코어: 블록 ${d.core.blocks}개 · W ${fmt(d.core.envelope_mm.w, 0)} × H ${fmt(d.core.envelope_mm.h, 0)} × D ${fmt(d.core.envelope_mm.d, 0)} mm · 질량 ${fmt(d.core.mass_g)} g`,
+      d.nucleus ? `양자 핵: ${d.nucleus.name} — ${d.nucleus.pattern}` : '양자 핵 없음 — QE 코어 블록을 꺼내면 코어의 핵이 된다',
+      `모듈 ${d.modules.length} · 연결 ${d.joints.length}: 결합 블록 ${jb} · 채널 블록 ${d.joints.length - jb}`,
     ].join('\n') }),
-    h('div', { className: 'dim', textContent: '조립 순서 (핵부터 바깥으로 끼운다)' }),
-    h('ol', { className: 'assembly' }, ...d.assembly.map((s) => h('li', { textContent: `${s.module}${s.mates.length ? ` — ${s.mates.join(', ')} 와 맞물림` : s.step === 1 ? ' — 중심' : ''}` }))),
-    h('div', { className: 'dim', textContent: '모듈' }),
-    table(['부품 번호', '모듈', '기능면', '재료', '부피 cm³', '질량 g', '수', '암'], d.modules.map((m) => [m.code, m.role === 'nucleus' ? `◉ ${m.name}` : m.name, m.feature, m.material, fmt(m.volume_cm3), fmt(m.mass_g), String(m.pins), String(m.sockets)])),
-    h('div', { className: 'dim', textContent: '결합부' }),
-    table(['연결', '신호', '커넥터', '위치 mm', '길이 mm', '지연 ps'], d.joints.map((j) => [`${j.from_name} → ${j.to_name}`, j.signal, j.kind === '핀–소켓' ? j.connector : '내부 채널', j.at_mm ? `(${j.at_mm.join(', ')})` : '—', fmt(j.length_mm, 0), fmt(j.delay_ps)])),
+    h('div', { className: 'dim', textContent: '조립 순서 (핵부터 바깥으로 짠다)' }),
+    h('ol', { className: 'assembly' }, ...d.assembly.map((x) => h('li', { textContent: `${x.module}${x.mates.length ? ` — ${x.mates.join(', ')} 와 결합` : x.step === 1 ? ' — 중심' : ''}` }))),
+    h('div', { className: 'dim', textContent: '모듈 (블록을 엮는 패턴)' }),
+    table(['부품 번호', '모듈', '패턴', '블록', '결합', '재료', '질량 g'], d.modules.map((m) => [m.code, m.role === 'nucleus' ? `◉ ${m.name}` : m.name, m.pattern, String(m.blocks), String(m.joint_blocks), m.material, fmt(m.mass_g)])),
+    h('div', { className: 'dim', textContent: '연결' }),
+    table(['연결', '신호', '방식', '블록', '위치 mm'], d.joints.map((j) => [`${j.from_name} → ${j.to_name}`, j.signal, j.kind, String(j.units), j.at_mm ? `(${j.at_mm.join(', ')})` : '—'])),
     h('div', { className: 'actions' }, save),
     where,
   );
@@ -1127,7 +1148,6 @@ function refresh(save = true) {
     const v = views.get(b.id);
     const st = result.state.get(b.id) ?? { status: 'idle' };
     v.el.querySelector('.name').textContent = coreForm() ? `${moduleCode(b.id)} ${b.name}` : b.name;
-    if (v.featureAccent) v.featureAccent.emissiveIntensity = st.status === 'ok' ? 0.2 + st.value * 0.8 : 0.05;
     v.el.dataset.status = st.status;
     v.el.querySelector('.out').textContent = st.status === 'ok' ? `${Math.round(st.value * 100)}%` : st.status === 'idle' ? '대기' : '오류';
     v.body.material.emissiveIntensity = st.status === 'ok' ? 0.1 + st.value * 0.6 : 0.02;
@@ -1493,9 +1513,10 @@ canvas.addEventListener('pointerdown', (e) => {
 // 블록 집기: 물리 형태에서는 큐브를 집으면 그 큐브가 속한 블록
 function pickBlock(e) {
   if (mathForm()) return pickAt(e, pickBodies);
-  if (coreForm()) {   // 잘라 낸 쪽은 건너뛴다
-    const hit = ray(e).intersectObjects(pickBodies.filter((o) => o.visible), false).find((x) => !inCut(x.point));
-    return hit?.object.userData ?? null;
+  if (coreForm()) {   // 블록 하나를 집으면 그 블록이 속한 모듈
+    const hit = ray(e).intersectObjects([unitMesh, glowMesh].filter((o) => o.visible), false)[0];
+    const id = hit && (hit.object === unitMesh ? unitOwner : glowOwner)[hit.instanceId];
+    return id ? { kind: 'block', id } : null;
   }
   const hit = vox && ray(e).intersectObject(voxMesh, false)[0];
   return hit ? { kind: 'block', id: program.blocks[vox.cells[voxOrder[hit.instanceId]].owner].id } : null;
@@ -1569,7 +1590,7 @@ canvas.addEventListener('pointerup', (e) => {
     refresh();
     if (docked.length) select({ kind: 'block', id: d.id });
   } else if (d.mode === 'orbit' && d.moved < 4) {
-    const w = pickAt(e, [...pickWires, ...pickPins, ...pickCables]);
+    const w = pickAt(e, [...pickWires, ...pickPins]);
     select(d.node ? { kind: 'node', key: d.node } : w ? { kind: 'wire', id: w.id } : null);
   }
 });
