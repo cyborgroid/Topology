@@ -207,6 +207,34 @@ export function emptyProgram() {
   return { blocks: [], wires: [] };
 }
 
+// No Base = Topology 자체의 초기 시스템 구조. Topology.md [결과] 의 관계대로 블록을 놓고 잇는다.
+//   환경(WIFI·데이터·전화번호) → VPN → Network → 빅데이터 → QE 코어 → Instrument → AI → Graphic → Topology
+const BASE_LAYOUT = [
+  ['wifi', -20, -3.5], ['data', -20, 0], ['phone', -20, 3.5],
+  ['vpn', -14.5, -2], ['network', -9, 0], ['bigdata', -3.5, -1], ['qe', 2, -1],
+  ['instrument', 7.5, 0.5], ['ai', 13, -1], ['graphic', 18.5, -1], ['topology', 24, 0.5],
+];
+const BASE_WIRES = [
+  ['wifi', 'link', 'vpn', 'link'], ['data', 'data', 'vpn', 'data'],
+  ['vpn', 'link', 'network', 'link'], ['phone', 'id', 'network', 'id'], ['data', 'data', 'network', 'data'],
+  ['network', 'link', 'bigdata', 'link'], ['bigdata', 'data', 'qe', 'data'],
+  ['qe', 'q', 'instrument', 'q'], ['phone', 'id', 'instrument', 'id'],
+  ['instrument', 'cmd', 'ai', 'cmd'], ['bigdata', 'data', 'ai', 'data'],
+  ['ai', 'token', 'graphic', 'token'], ['graphic', 'screen', 'topology', 'screen'], ['instrument', 'cmd', 'topology', 'cmd'],
+];
+
+export function baseProgram(defaults = {}) {
+  const program = { ...emptyProgram(), nobase: true };
+  const ids = {};
+  for (const [type, x, z] of BASE_LAYOUT) {
+    const b = createBlock(type, program, x, z, defaults);
+    ids[type] = b.id;
+    program.blocks.push(b);
+  }
+  for (const [a, ap, b, bp] of BASE_WIRES) connect(program, { block: ids[a], port: ap }, { block: ids[b], port: bp });
+  return program;
+}
+
 // 저장된 프로그램을 읽을 때: 모르는 블록과 끊어진 연결은 버린다.
 export function sanitize(p) {
   if (!p || !Array.isArray(p.blocks) || !Array.isArray(p.wires)) return emptyProgram();
@@ -215,5 +243,5 @@ export function sanitize(p) {
   const ids = new Set(blocks.map((b) => b.id));
   const wires = p.wires.filter((w) => w && ids.has(w.from?.block) && ids.has(w.to?.block)
     && findPort({ blocks }, w.from.block, w.from.port, 'outs') && findPort({ blocks }, w.to.block, w.to.port, 'ins'));
-  return { blocks, wires };
+  return { blocks, wires, ...(p.nobase ? { nobase: true } : {}) };
 }

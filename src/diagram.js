@@ -1,11 +1,11 @@
 // 다이어그램 뷰: Quantum Neuron Block Computing 의 3D 조립판.
-// No Base(빈 판)에서 시작해, 기능 모듈 블록을 꺼내 놓고 호환되는 단자끼리 이어 체계화된 시스템을 쌓아 올린다.
+// No Base(초기 상태) = Topology 자체의 시스템 구조가 조립된 판. 여기서 블록을 꺼내 놓거나 단자를 다시 이어 시스템을 키운다.
 // 조립이 바뀌거나 환경 값이 바뀔 때마다 시스템 전체를 계산해(blocks.js) 블록마다 양자 뉴런의 상태를 보여 준다.
 import * as THREE from 'three';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { canvas, registerView, isActive, isTyping, isUi, onViewChange } from './core.js';
 import { CONTROLS, NODES } from './topology.config.js';
-import { BLOCK_TYPES, SIGNALS, createBlock, canConnect, connect, removeBlock, evaluate, emptyProgram } from './blocks.js';
+import { BLOCK_TYPES, SIGNALS, createBlock, canConnect, connect, removeBlock, evaluate, emptyProgram, baseProgram } from './blocks.js';
 
 const WATER = 0x04223a;
 const BW = 2.8, BH = 0.6, BD = 1.8;   // 블록 크기
@@ -43,12 +43,8 @@ export const hooks = {
   changed: () => {},         // 평가 결과가 바뀜 (시스템 창, 작업 표시줄 갱신)
 };
 
-// --- 조립판 (No Base) -----------------------------------------------------------
+// --- 조립판 ---------------------------------------------------------------------
 const BOARD = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-const grid = new THREE.GridHelper(80, 40, 0x2a6f8f, 0x123c55);
-grid.material.transparent = true;
-grid.material.opacity = 0.5;
-scene.add(grid);
 
 let program = emptyProgram();
 let env = {};
@@ -197,6 +193,7 @@ function refresh(save = true) {
   }
   rebuildWires();
   result = evaluate(program, env);
+  if (save) delete program.nobase;   // 손대면 더 이상 초기 상태가 아니다
 
   for (const b of program.blocks) {
     const v = views.get(b.id);
@@ -221,7 +218,7 @@ function refresh(save = true) {
     }
   }
 
-  nobaseEl.hidden = program.blocks.length > 0 || !isActive(view);
+  nobaseEl.hidden = !program.nobase || !isActive(view);
   renderPaletteStatus();
   renderInfo();
   hooks.changed(snapshot());
@@ -272,13 +269,14 @@ function buildPalette() {
       item.addEventListener('dragstart', (e) => e.dataTransfer.setData('text/plain', `block:${type}`));
       return item;
     })));
-  const clear = h('button', { className: 'clear', textContent: '🗑 모두 비우기 (No Base)' });
+  const clear = h('button', { className: 'clear', textContent: '↺ 초기 구조로 (No Base)' });
   clear.addEventListener('click', () => {
-    if (program.blocks.length && confirm('조립한 블록을 모두 지우고 No Base 로 돌아갈까요?')) {
-      program.blocks = [];
-      program.wires = [];
+    if (!program.nobase && confirm('지금 조립을 지우고 Topology 초기 시스템 구조(No Base)로 돌아갈까요?')) {
+      program = baseProgram({ path: hooks.dataPlaces()[0]?.path });
       select(null);
-      refresh();
+      refresh(false);
+      hooks.save(program);
+      overview();
     }
   });
   paletteEl.replaceChildren(
@@ -601,17 +599,17 @@ const view = {
   update,
   render: () => labels.render(scene, camera),
   resize: () => labels.setSize(innerWidth, innerHeight),
-  status: () => (!program.blocks.length ? 'No Base'
+  status: () => (program.nobase ? 'No Base'
     : `블록 ${program.blocks.length} · 시스템 ${result.system === null ? '—' : `${Math.round(result.system * 100)}%`}`),
 };
 registerView('diagram', view);
 onViewChange((name) => {
   infoEl.hidden = name !== 'diagram' || !selected;
-  nobaseEl.hidden = name !== 'diagram' || program.blocks.length > 0;
+  nobaseEl.hidden = name !== 'diagram' || !program.nobase;
 });
 
 export function build(saved, initialEnv) {
-  program = saved;
+  program = saved.blocks.length ? saved : baseProgram({ path: hooks.dataPlaces()[0]?.path });
   env = initialEnv;
   buildPalette();
   refresh(false);

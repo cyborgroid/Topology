@@ -51,9 +51,9 @@ input:focus { border-color: var(--accent); }
 .palette .clear { padding: 6px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; }
 .palette .clear:hover { background: rgba(255, 120, 120, 0.15); }
 
-.nobase { position: fixed; z-index: 4; left: 50%; top: 42%; transform: translate(-50%, -50%); display: flex; flex-direction: column;
-  align-items: center; gap: 8px; pointer-events: none; text-align: center; }
-.nobase strong { font-size: 44px; letter-spacing: 0.2em; color: rgba(127, 231, 255, 0.55); }
+.nobase { position: fixed; z-index: 4; left: 50%; top: 20px; transform: translateX(-50%); display: flex; flex-direction: column;
+  align-items: center; gap: 4px; pointer-events: none; text-align: center; }
+.nobase strong { font-size: 26px; letter-spacing: 0.2em; color: rgba(127, 231, 255, 0.55); }
 .nobase span { font-size: 14px; color: var(--dim); }
 
 .info input, .info select { width: 100%; box-sizing: border-box; margin: 6px 0; }
