@@ -174,4 +174,14 @@ async function saveProgram(program) {
   return true;
 }
 
-module.exports = { places, listDir, open, exec: execCommand, sysInfo, netInfo, apps, launch, loadProgram, saveProgram };
+// Quantum Analog Neuron Core 물리 설계도: 조립한 블록에서 나온 치수·재료·접촉을 JSON 으로 남긴다.
+const DESIGN = path.join(HOME, '.config', 'qe-analog-topology', 'core-design.json');
+
+async function saveDesign(design) {
+  if (!design || !Array.isArray(design.blocks)) throw new Error('잘못된 설계도');
+  await fs.mkdir(path.dirname(DESIGN), { recursive: true });
+  await fs.writeFile(DESIGN, JSON.stringify(design, null, 2));
+  return DESIGN;
+}
+
+module.exports = { places, listDir, open, exec: execCommand, sysInfo, netInfo, apps, launch, loadProgram, saveProgram, saveDesign };

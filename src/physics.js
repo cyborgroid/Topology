@@ -3,24 +3,27 @@
 //  - 연결 용수철: 이어진 블록끼리 수학 자리에서의 거리를 지키려 한다 — 하나를 끌면 회로가 따라온다
 //  - 밀어내기: 너무 가까운 씨앗끼리 밀어낸다 (영역이 찌그러지지 않게)
 //  - 감쇠: 움직임이 잦아들어 구조가 자리를 잡는다
+//  - 질량 = 영역 부피 × 재료 밀도: 무거운 블록은 덜 움직인다. 연결 강성은 접촉면 넓이에 비례: 넓게 맞닿을수록 단단하다
 const K_REST = 7, K_LINK = 5, K_PUSH = 30, PUSH_R = 2.4, DAMP = 5.5;
 
 export class Physics {
-  bodies = new Map();   // id -> { p: [x,y,z], v: [x,y,z], rest: [x,y,z] }
-  links = [];           // { a, b, len }
+  bodies = new Map();   // id -> { p: [x,y,z], v: [x,y,z], rest: [x,y,z], m }
+  links = [];           // { a, b, len, k }
   held = null;          // { id, p } — 손으로 잡은 씨앗은 손을 따른다
 
   // 수학 자리와 연결을 맞춘다. 새 씨앗은 제자리에서 태어난다.
-  sync(rest, links) {
+  // links = [[a, b, 강성 배수]], mass = id -> 상대 질량
+  sync(rest, links, mass = new Map()) {
     for (const id of this.bodies.keys()) if (!rest.has(id)) this.bodies.delete(id);
     for (const [id, p] of rest) {
       const b = this.bodies.get(id);
       if (b) b.rest = [...p];
-      else this.bodies.set(id, { p: [...p], v: [0, 0, 0], rest: [...p] });
+      else this.bodies.set(id, { p: [...p], v: [0, 0, 0], rest: [...p], m: 1 });
+      this.bodies.get(id).m = mass.get(id) ?? 1;
     }
-    this.links = links.filter(([a, b]) => rest.has(a) && rest.has(b) && a !== b).map(([a, b]) => {
+    this.links = links.filter(([a, b]) => rest.has(a) && rest.has(b) && a !== b).map(([a, b, k = 1]) => {
       const ra = rest.get(a), rb = rest.get(b);
-      return { a, b, len: Math.hypot(ra[0] - rb[0], ra[1] - rb[1], ra[2] - rb[2]) };
+      return { a, b, k, len: Math.hypot(ra[0] - rb[0], ra[1] - rb[1], ra[2] - rb[2]) };
     });
   }
 
@@ -39,12 +42,12 @@ export class Physics {
     const h = dt / steps;
     let energy = 0;
     for (let s = 0; s < steps; s++) {
-      const f = new Map(list.map(([id, b]) => [id, b.rest.map((r, i) => K_REST * (r - b.p[i]) - DAMP * b.v[i])]));
-      for (const { a, b, len } of this.links) {
+      const f = new Map(list.map(([id, b]) => [id, b.rest.map((r, i) => (K_REST * (r - b.p[i]) - DAMP * b.v[i]) * b.m)]));
+      for (const { a, b, len, k: stiff } of this.links) {
         const pa = this.bodies.get(a).p, pb = this.bodies.get(b).p;
         const d = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
         const L = Math.hypot(...d) || 1e-6;
-        const k = (K_LINK * (L - len)) / L;
+        const k = (K_LINK * stiff * (L - len)) / L;
         for (let i = 0; i < 3; i++) { f.get(a)[i] += k * d[i]; f.get(b)[i] -= k * d[i]; }
       }
       for (let x = 0; x < list.length; x++) {
@@ -66,7 +69,7 @@ export class Physics {
           continue;
         }
         for (let i = 0; i < 3; i++) {
-          b.v[i] += f.get(id)[i] * h;
+          b.v[i] += (f.get(id)[i] / b.m) * h;   // a = F / m
           b.p[i] += b.v[i] * h;
         }
         energy += b.v[0] ** 2 + b.v[1] ** 2 + b.v[2] ** 2;

@@ -37,6 +37,22 @@ export const ANCHORS = [
   { place: 'music',     node: 'qe',         reason: '자연의 소리' },
 ];
 
+// 물리 설계 가정값 — Quantum Analog Neuron Core 를 실제로 만들 때 이 값을 바꾸면 설계도가 따라 바뀐다.
+// 블록(영역)의 재료는 묶음(group)을 따른다. 접촉면은 패드, 떨어진 연결은 브리지(도체)로 잇는다.
+export const PHYSICAL = {
+  unitMM: 10,   // 화면 1 = 10 mm
+  materials: {
+    '환경':        { name: '실리콘', density: 2.33 },     // g/cm³
+    '네트워크':    { name: '구리', density: 8.96 },
+    '양자 · 처리': { name: '사파이어', density: 3.98 },
+    '화면':        { name: '유리', density: 2.5 },
+  },
+  pad: { name: '구리 패드', conductivity: 5.96e7 },            // S/m — 접촉면 전체가 패드
+  bridge: { name: '구리 브리지', conductivity: 5.96e7, sectionMM2: 1 },
+  signalSpeed: 0.6,   // 빛의 속도 대비 신호 속도
+  gap: 0.06,          // 이웃 영역 사이 틈 = 씨앗 거리 × gap (패드 두께)
+};
+
 export const CONTROLS = {
   orbitSensitivity: 0.005,
   fineFactor: 0.4,

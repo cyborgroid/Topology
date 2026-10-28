@@ -6,11 +6,13 @@
 // 계산한다(λ^D). 연결은 선이 아니라 두 영역이 맞닿는 접합면이 빛나는 것이다. 영역 중심에 양자 뉴런 핵과 단자가 있다.
 // 폴더와 파일도 양자 아날로그 뉴런 블록이다: 블록 영역 안에서 같은 차원 법칙으로 다시 영역을 개척한다(영역 안의 영역).
 // 영역 안은 블록의 신호만큼 양자 에너지 장이 찬다. 씨앗은 질량이어서(physics.js) 블록을 끌면 회로가 유기체처럼 따라온다.
+// 블록을 끌어 다른 블록에 맞대면 접촉면으로 결합(조립)된다. 조립한 결과가 곧 물리 설계도다 — 재료, 치수(mm), 질량,
+// 접촉 패드·브리지, 컨덕턴스, 지연 (Quantum Analog Neuron Core 설계의 바탕).
 import * as THREE from 'three';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
 import { canvas, registerView, isActive, isTyping, isUi, onViewChange } from './core.js';
-import { CONTROLS, NODES } from './topology.config.js';
+import { CONTROLS, NODES, PHYSICAL } from './topology.config.js';
 import { BLOCK_TYPES, SIGNALS, createBlock, canConnect, connect, removeBlock, evaluate, emptyProgram, baseProgram, quantumNeuron } from './blocks.js';
 import { DIM_LIMIT, DEFAULT_DIM, ratio, toSlider, fromSlider, seeds, pathSeeds, voronoi, inset, inradius, energy, flowOrder } from './field.js';
 import { Physics } from './physics.js';
@@ -38,6 +40,7 @@ const hintEl = document.getElementById('diagram-hint');
 const paletteEl = document.getElementById('palette');
 const nobaseEl = document.getElementById('nobase');
 const dimEl = document.getElementById('dimension');
+const designEl = document.getElementById('design');
 
 // Topology 환경과 잇는 통로 (main.js 가 채운다)
 export const hooks = {
@@ -50,6 +53,7 @@ export const hooks = {
   openSystem: () => {},      // 데스크톱의 QE 시스템 창
   listDir: async () => ({ entries: [], total: 0 }),   // 폴더 안의 항목
   openFile: () => {},        // 파일을 기본 앱으로
+  saveDesign: async () => '',   // 물리 설계도 저장 -> 저장한 경로
   changed: () => {},         // 평가 결과가 바뀜 (시스템 창, 작업 표시줄 갱신)
 };
 
@@ -66,6 +70,7 @@ let measures = new Map();          // blockId -> { k, scale: 선형 축척 λ, s
 const fieldBox = new THREE.Box3();   // 개척된 영역 전체
 const phys = new Physics();
 let cellPlanes = new Map();          // blockId -> 영역 경계 평면 (안쪽 폴더·파일 영역의 바깥 경계)
+let cellInfo = new Map();            // blockId -> { verts, faces, volume, area } — 물리 설계의 바탕
 let settling = false;                // 물리가 움직이는 중이면 안쪽 영역은 따라 옮기기만 하고, 멈추면 다시 개척한다
 
 // --- 블록 그리기: 보로노이 셀 + 중심의 양자 뉴런 핵 -----------------------------------------
@@ -166,18 +171,18 @@ const seamViews = new Map();   // wireId -> { mesh, type, from, to, curve }
 const pickWires = [];
 
 function rebuildSeams() {
-  for (const v of seamViews.values()) { scene.remove(v.mesh); v.mesh.material.dispose(); }
+  for (const v of seamViews.values()) { scene.remove(v.mesh); v.mesh.material.dispose(); if (v.pad) v.mesh.geometry.dispose(); }
   seamViews.clear();
   pickWires.length = 0;
   for (const w of program.wires) {
     const b = program.blocks.find((x) => x.id === w.from.block);
     const type = BLOCK_TYPES[b.type].outs.find((p) => p.id === w.from.port).type;
     const color = SIGNALS[type].color;
-    const mesh = new THREE.Mesh(seamGeo, new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.4, transparent: true, opacity: 0.9 }));
+    const mesh = new THREE.Mesh(seamGeo, new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.4, transparent: true, opacity: 0.9, side: THREE.DoubleSide }));
     mesh.userData = { kind: 'wire', id: w.id };
     scene.add(mesh);
     pickWires.push(mesh);
-    seamViews.set(w.id, { mesh, type, from: w.from.block, to: w.to.block, curve: new THREE.LineCurve3(new THREE.Vector3(), new THREE.Vector3()) });
+    seamViews.set(w.id, { mesh, type, wire: w, from: w.from.block, to: w.to.block, pad: false, curve: new THREE.LineCurve3(new THREE.Vector3(), new THREE.Vector3()) });
   }
 }
 
@@ -193,13 +198,27 @@ function setCell(mesh, seed, verts, shrink) {
 }
 
 // 수학 자리: 차원 D 의 씨앗 + 사용자가 끌어 옮겨 둔 만큼(b.off). 물리는 이 자리로 당긴다.
+// 질량 = 부피 × 밀도, 연결 강성 = 접촉면 넓이 (지난 개척 결과로 잰다). 평균을 1 로 맞춘 상대값.
 function computeRest() {
   measures = seeds(program, dim());
+  const grams = new Map(program.blocks.map((b) => [b.id, physicalMass(b)]));
+  const meanG = [...grams.values()].reduce((a, g) => a + g, 0) / Math.max(grams.size, 1) || 1;
+  const areas = program.wires.map((w) => contactFace(w)?.area ?? 0);
+  const meanA = areas.filter((a) => a > 0).reduce((a, x, _, l) => a + x / l.length, 0) || 1;
   phys.sync(
     new Map(program.blocks.map((b) => [b.id, measures.get(b.id).p.map((v, i) => v + (b.off?.[i] ?? 0))])),
-    program.wires.map((w) => [w.from.block, w.to.block]),
+    program.wires.map((w, i) => [w.from.block, w.to.block, THREE.MathUtils.clamp(areas[i] / meanA, 0.3, 3)]),
+    new Map([...grams].map(([id, g]) => [id, THREE.MathUtils.clamp(g / meanG || 1, 0.3, 3)])),
   );
 }
+
+// --- 물리 설계: 재료, 치수, 질량, 접촉 ----------------------------------------------------
+const CM = PHYSICAL.unitMM / 10;                     // 화면 1 = CM cm
+const materialOf = (b) => PHYSICAL.materials[BLOCK_TYPES[b.type].group] ?? { name: '—', density: 1 };
+const physicalMass = (b) => (cellInfo.get(b.id)?.volume ?? 0) * CM ** 3 * materialOf(b).density;   // g
+const blockIndex = (id) => program.blocks.findIndex((x) => x.id === id);
+// 두 블록이 맞닿은 면 (없으면 떨어져 있어 브리지가 필요)
+const contactFace = (w) => cellInfo.get(w.from.block)?.faces.find((f) => f.j === blockIndex(w.to.block));
 
 // --- 폴더·파일 블록 ----------------------------------------------------------------
 // 블록이 다루는 폴더(데이터 = 고른 폴더의 항목, 그 밖 = 개념에 접목된 폴더)가 블록 영역 안의 영역이 된다.
@@ -353,11 +372,13 @@ function layoutCells(full) {
   for (const b of program.blocks) views.get(b.id).group.position.fromArray(phys.pos(b.id));
   fieldBox.makeEmpty();
   const cells = pts.length ? voronoi(pts) : [];
-  cells.forEach(({ verts, planes }, k) => {
+  cellInfo = new Map();
+  cells.forEach((cell, k) => {
     const id = program.blocks[k].id;
-    setCell(views.get(id).body, pts[k], verts, 0.94);
-    cellPlanes.set(id, planes);
-    verts.forEach((q) => fieldBox.expandByPoint(new THREE.Vector3(...q)));
+    setCell(views.get(id).body, pts[k], cell.verts, 1 - PHYSICAL.gap);
+    cellPlanes.set(id, cell.planes);
+    cellInfo.set(id, cell);
+    cell.verts.forEach((q) => fieldBox.expandByPoint(new THREE.Vector3(...q)));
   });
 
   if (full) {
@@ -368,16 +389,204 @@ function layoutCells(full) {
     }
   }
 
+  // 접합: 맞닿았으면 공유면 모양 그대로 패드, 떨어졌으면 두 영역 사이의 브리지(도체)
   for (const v of seamViews.values()) {
     const a = views.get(v.from).group.position, b = views.get(v.to).group.position;
     v.curve.v1.copy(a);
     v.curve.v2.copy(b);
-    v.mesh.position.lerpVectors(a, b, 0.5);
-    const dir = b.clone().sub(a);
-    if (dir.lengthSq() > 1e-6) v.mesh.quaternion.setFromUnitVectors(UP, dir.normalize());
+    const face = contactFace(v.wire);
+    if (v.pad) v.mesh.geometry.dispose();
+    v.pad = !!face;
+    if (face) {
+      const [cx, cy, cz] = face.centroid;
+      const ring = face.poly.map((q) => [cx + (q[0] - cx) * 0.8, cy + (q[1] - cy) * 0.8, cz + (q[2] - cz) * 0.8]);
+      const tri = ring.flatMap((q, i) => [cx, cy, cz, ...q, ...ring[(i + 1) % ring.length]]);
+      v.mesh.geometry = new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(tri, 3));
+      v.mesh.geometry.computeVertexNormals();
+      v.mesh.position.set(0, 0, 0);
+      v.mesh.quaternion.identity();
+      v.mesh.scale.setScalar(1);
+    } else {
+      v.mesh.geometry = seamGeo;
+      v.mesh.position.lerpVectors(a, b, 0.5);
+      const dir = b.clone().sub(a);
+      if (dir.lengthSq() > 1e-6) v.mesh.quaternion.setFromUnitVectors(UP, dir.normalize());
+      v.mesh.scale.set(0.45, 1, 0.45);
+    }
   }
   fillEnergy(cells);
+  placeDesignMarks();
 }
+
+// --- 물리 설계도 ---------------------------------------------------------------------
+// 조립한 블록에서 바로 나온다: 블록 = 재료 덩어리(영역 다면체), 접합 = 접촉 패드 또는 브리지.
+const C_LIGHT = 299792458;
+function designSheet() {
+  const u = PHYSICAL.unitMM;
+  const mm = (p) => p.map((v) => Math.round(v * u * 100) / 100);
+  const blocks = program.blocks.map((b) => {
+    const c = cellInfo.get(b.id), mat = materialOf(b);
+    return {
+      id: b.id, type: b.type, name: b.name, material: mat.name, density_g_cm3: mat.density,
+      seed_mm: mm(phys.pos(b.id)),
+      volume_cm3: c.volume * CM ** 3, surface_cm2: c.area * CM ** 2, mass_g: physicalMass(b),
+      faces: c.faces.map((f) => ({ neighbor: f.j >= 0 ? program.blocks[f.j].id : null, area_mm2: f.area * u * u, normal: f.normal })),
+      vertices_mm: c.verts.map(mm),
+    };
+  });
+  const contacts = program.wires.map((w) => {
+    const face = contactFace(w);
+    const type = BLOCK_TYPES[program.blocks[blockIndex(w.from.block)].type].outs.find((p) => p.id === w.from.port).type;
+    const pa = phys.pos(w.from.block), pb = phys.pos(w.to.block);
+    const dist = Math.hypot(pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]) * u;   // mm
+    const part = face ? PHYSICAL.pad : PHYSICAL.bridge;
+    const lengthMM = face ? dist * PHYSICAL.gap : dist;                         // 패드 두께 = 틈, 브리지 길이 = 씨앗 거리
+    const areaMM2 = face ? face.area * u * u : PHYSICAL.bridge.sectionMM2;
+    return {
+      from: w.from, to: w.to, signal: SIGNALS[type].label, kind: face ? 'pad' : 'bridge', material: part.name,
+      area_mm2: areaMM2, length_mm: lengthMM,
+      conductance_S: (part.conductivity * areaMM2 * 1e-6) / (lengthMM * 1e-3),
+      delay_ps: (lengthMM * 1e-3) / (PHYSICAL.signalSpeed * C_LIGHT) * 1e12,
+    };
+  });
+  const total = blocks.reduce((a, b) => a + b.mass_g, 0);
+  const com = [0, 1, 2].map((i) => blocks.reduce((a, b) => a + b.seed_mm[i] * b.mass_g, 0) / (total || 1));
+  const size = fieldBox.getSize(new THREE.Vector3()).multiplyScalar(u);
+  return {
+    name: 'Quantum Analog Neuron Core', created: new Date().toISOString(), unit: 'mm', dimension: dim(),
+    assumptions: PHYSICAL,
+    envelope_mm: { w: size.x, h: size.y, d: size.z },
+    total_volume_cm3: blocks.reduce((a, b) => a + b.volume_cm3, 0), total_mass_g: total, center_of_mass_mm: com,
+    blocks, contacts,
+  };
+}
+
+// 외곽 치수 상자와 무게중심 (설계도를 펼쳤을 때만)
+let designOpen = false;
+const envelope = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1)), new THREE.LineDashedMaterial({ color: 0xfff1a8, dashSize: 0.04, gapSize: 0.03, transparent: true, opacity: 0.7 }));
+envelope.computeLineDistances();
+const comMark = new THREE.Mesh(new THREE.OctahedronGeometry(0.45), new THREE.MeshBasicMaterial({ color: 0xfff1a8, wireframe: true }));
+const dimLabels = ['w', 'h', 'd', 'com'].map((k) => {
+  const el = document.createElement('div');
+  el.className = 'label label-dim';
+  const o = new CSS2DObject(el);
+  scene.add(o);
+  return { k, el, o };
+});
+scene.add(envelope, comMark);
+
+function placeDesignMarks() {
+  const show = designOpen && isActive(view) && !fieldBox.isEmpty();
+  envelope.visible = comMark.visible = show;
+  dimLabels.forEach((l) => { l.o.visible = show; });
+  if (!show) return;
+  const c = fieldBox.getCenter(new THREE.Vector3()), sz = fieldBox.getSize(new THREE.Vector3());
+  envelope.position.copy(c);
+  envelope.scale.copy(sz);
+  const u = PHYSICAL.unitMM, { max } = fieldBox;
+  const at = { w: [c.x, max.y, max.z], h: [max.x, c.y, max.z], d: [max.x, max.y, c.z] };
+  for (const l of dimLabels) {
+    if (l.k === 'com') continue;
+    l.o.position.fromArray(at[l.k]);
+    l.el.textContent = `${l.k.toUpperCase()} ${(sz[{ w: 'x', h: 'y', d: 'z' }[l.k]] * u).toFixed(0)} mm`;
+  }
+  let m = 0;
+  const com = new THREE.Vector3();
+  for (const b of program.blocks) {
+    const g = physicalMass(b);
+    com.addScaledVector(new THREE.Vector3().fromArray(phys.pos(b.id)), g);
+    m += g;
+  }
+  com.divideScalar(m || 1);
+  comMark.position.copy(com);
+  const lc = dimLabels.find((l) => l.k === 'com');
+  lc.o.position.copy(com);
+  lc.el.textContent = '무게중심';
+}
+
+const fmt = (v, d = 1) => (Math.abs(v) >= 1e4 || (Math.abs(v) < 1e-2 && v !== 0) ? v.toExponential(2) : v.toFixed(d));
+function renderDesign() {
+  designEl.hidden = !designOpen || !isActive(view);
+  placeDesignMarks();
+  if (designEl.hidden || !program.blocks.length || !cellInfo.size) return;
+  const d = designSheet();
+  const name = (ref) => program.blocks[blockIndex(ref.block)]?.name;
+  const table = (head, rows) => h('table', {}, h('tr', {}, ...head.map((t) => h('th', { textContent: t }))),
+    ...rows.map((r) => h('tr', {}, ...r.map((t) => h('td', { textContent: t })))));
+  const pads = d.contacts.filter((c) => c.kind === 'pad').length;
+  const save = h('button', { textContent: '💾 설계도 저장 (JSON)' });
+  const where = h('div', { className: 'dim' });
+  save.addEventListener('click', async () => {
+    where.textContent = '저장하는 중…';
+    try { where.textContent = `저장됨: ${await hooks.saveDesign(designSheet())}`; } catch (err) { where.textContent = `저장 실패: ${err.message}`; }
+  });
+  const close = h('button', { textContent: '✕' });
+  close.addEventListener('click', () => toggleDesign(false));
+  designEl.replaceChildren(
+    h('div', { className: 'design-head' }, h('strong', { textContent: 'Quantum Analog Neuron Core — 물리 설계' }), close),
+    h('div', { className: 'dim', textContent: '블록을 조립한 그대로의 설계. 재료·단위는 topology.config.js 의 PHYSICAL 가정값.' }),
+    h('div', { className: 'live', textContent: [
+      `외곽 W ${fmt(d.envelope_mm.w, 0)} × H ${fmt(d.envelope_mm.h, 0)} × D ${fmt(d.envelope_mm.d, 0)} mm · 차원 D = ${fmtD(d.dimension)}`,
+      `부피 ${fmt(d.total_volume_cm3)} cm³ · 질량 ${fmt(d.total_mass_g)} g · 무게중심 (${d.center_of_mass_mm.map((v) => v.toFixed(0)).join(', ')}) mm`,
+      `접합 ${d.contacts.length}: 접촉 패드 ${pads} · 브리지 ${d.contacts.length - pads}${d.contacts.length - pads ? ' (맞대어 조립하면 패드가 된다)' : ''}`,
+    ].join('\n') }),
+    h('div', { className: 'dim', textContent: '블록 (영역 = 재료 덩어리)' }),
+    table(['블록', '재료', '부피 cm³', '질량 g', '이웃 면'], d.blocks.map((b) => [b.name, b.material, fmt(b.volume_cm3), fmt(b.mass_g), String(b.faces.filter((f) => f.neighbor).length)])),
+    h('div', { className: 'dim', textContent: '접합 (신호가 지나는 물리 경로)' }),
+    table(['연결', '신호', '방식', '면적 mm²', '길이 mm', 'G (S)', '지연 ps'], d.contacts.map((c) => [
+      `${name(c.from)} → ${name(c.to)}`, c.signal, c.kind === 'pad' ? '패드' : '브리지', fmt(c.area_mm2, 0), fmt(c.length_mm), fmt(c.conductance_S, 0), fmt(c.delay_ps)])),
+    h('div', { className: 'actions' }, save),
+    where,
+  );
+}
+
+export function toggleDesign(open = !designOpen) {
+  designOpen = open;
+  renderInfo();
+  renderDesign();
+  overview();
+}
+
+// --- 조립: 끌어 온 블록이 맞닿은 이웃과 호환 단자가 있으면 접촉면으로 결합한다 -----------------------
+// a 의 출력 → b 의 비어 있는 입력 (양자 출력은 한 곳에만)
+function portPair(a, b) {
+  const A = program.blocks[blockIndex(a)], B = program.blocks[blockIndex(b)];
+  for (const o of BLOCK_TYPES[A.type].outs) {
+    if (SIGNALS[o.type].single && program.wires.some((w) => w.from.block === a && w.from.port === o.id)) continue;
+    for (const i of BLOCK_TYPES[B.type].ins) {
+      if (o.type !== i.type || program.wires.some((w) => w.to.block === b && w.to.port === i.id)) continue;
+      return { from: { block: a, port: o.id }, to: { block: b, port: i.id } };
+    }
+  }
+  return null;
+}
+
+function dockOptions(id) {
+  const out = [];
+  for (const f of cellInfo.get(id)?.faces ?? []) {
+    if (f.j < 0 || f.area < 0.3) continue;
+    const other = program.blocks[f.j].id;
+    if (program.wires.some((w) => (w.from.block === id && w.to.block === other) || (w.to.block === id && w.from.block === other))) continue;
+    const pair = portPair(id, other) ?? portPair(other, id);
+    if (pair) out.push({ face: f, pair });
+  }
+  return out;
+}
+
+// 끄는 동안 결합할 수 있는 접촉면을 빛낸다
+const dockMarks = new THREE.Group();
+scene.add(dockMarks);
+function showDock(options, t) {
+  dockMarks.children.forEach((m) => m.geometry.dispose());
+  dockMarks.clear();
+  for (const { face, pair } of options) {
+    const type = BLOCK_TYPES[program.blocks[blockIndex(pair.from.block)].type].outs.find((p) => p.id === pair.from.port).type;
+    const line = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(face.poly.map((q) => new THREE.Vector3(...q))),
+      new THREE.LineBasicMaterial({ color: SIGNALS[type].color, transparent: true, opacity: 0.6 + 0.4 * Math.sin(t * 8) }));
+    dockMarks.add(line);
+  }
+}
+
 
 function termWorld(blockId, side, portId) {
   const b = program.blocks.find((x) => x.id === blockId);
@@ -441,6 +650,7 @@ function refresh(save = true) {
   renderDimension();
   renderPaletteStatus();
   renderInfo();
+  renderDesign();
   hooks.changed(snapshot());
   if (save) hooks.save(program);
 }
@@ -500,11 +710,14 @@ function buildPalette() {
       overview();
     }
   });
+  const design = h('button', { className: 'clear', textContent: '⚙ 물리 설계도 (Neuron Core)' });
+  design.addEventListener('click', () => toggleDesign());
   paletteEl.replaceChildren(
     h('div', { className: 'palette-title', textContent: '양자 뉴런 블록' }),
     h('div', { className: 'palette-sub', textContent: '기능 모듈을 꺼내면 자기 영역을 개척해 블록이 됩니다. 같은 색 단자끼리 이으세요' }),
     ...sections,
     h('div', { className: 'palette-status' }),
+    design,
     clear,
   );
 }
@@ -585,7 +798,7 @@ function select(sel) {
 }
 
 function renderInfo() {
-  if (!selected || !isActive(view)) { infoEl.hidden = true; return; }
+  if (!selected || !isActive(view) || designOpen) { infoEl.hidden = true; return; }
   const button = (text, fn, title = '') => {
     const b = h('button', { textContent: text, title });
     b.addEventListener('click', fn);
@@ -700,8 +913,8 @@ export function overview() {
   box.union(fieldBox);
   goal.target.copy(box.getCenter(new THREE.Vector3()));
   goal.sph.radius = Math.max(14, box.getSize(new THREE.Vector3()).length() * 1.25);
-  // 왼쪽 팔레트에 가리지 않게 중심을 조금 왼쪽으로 잡아 블록이 화면 오른쪽에 오게 한다
-  goal.target.x -= goal.sph.radius * 0.17;
+  // 왼쪽 팔레트에 가리지 않게 중심을 조금 왼쪽으로 잡아 블록이 화면 오른쪽에 오게 한다 (설계도를 펴면 반대로)
+  goal.target.x -= goal.sph.radius * (designOpen ? -0.12 : 0.17);
 }
 
 // --- 마우스 ---------------------------------------------------------------------
@@ -751,6 +964,7 @@ canvas.addEventListener('pointerdown', (e) => {
   }
   const node = pickAt(e, focusedNodes());
   if (node) { drag = { mode: 'orbit', moved: 0, node: node.key }; return; }
+  // (블록을 끌어 다른 블록에 맞대면 결합한다 — pointerup 의 dockOptions)
   const body = !e.shiftKey && pickAt(e, pickBodies);
   if (body) {
     const at = new THREE.Vector3().fromArray(phys.pos(body.id));
@@ -823,8 +1037,11 @@ canvas.addEventListener('pointerup', (e) => {
     const b = program.blocks.find((x) => x.id === d.id);
     const p = phys.pos(d.id), m = measures.get(d.id).p;
     b.off = p.map((v, i) => Math.round((v - m[i]) * 100) / 100);
+    const docked = dockOptions(d.id);   // 맞닿은 호환 이웃과 결합 = 조립
+    for (const { pair } of docked) connect(program, pair.from, pair.to);
     phys.release();
     refresh();
+    if (docked.length) select({ kind: 'block', id: d.id });
   } else if (d.mode === 'orbit' && d.moved < 4) {
     const w = pickAt(e, pickWires);
     select(d.node ? { kind: 'node', key: d.node } : w ? { kind: 'wire', id: w.id } : null);
@@ -886,7 +1103,11 @@ function update(dt, t) {
   } else if (settling) {
     settling = false;
     layoutCells(true);
+    computeRest();   // 새 영역으로 질량·접촉 강성을 다시 잰다
+    renderDesign();
   }
+  if (drag?.mode === 'grab' && drag.moved >= 4) showDock(dockOptions(drag.id), t);
+  else if (dockMarks.children.length) showDock([], t);
 
   // 고른 블록은 투명해져 안쪽 폴더·파일 블록이 보인다. 이름표는 고른 영역 것만.
   const focus = selected?.kind === 'block' ? selected.id : selected?.kind === 'node' ? nodes.get(selected.key)?.owner : null;
@@ -937,7 +1158,9 @@ const view = {
 };
 registerView('diagram', view);
 onViewChange((name) => {
-  infoEl.hidden = name !== 'diagram' || !selected;
+  infoEl.hidden = name !== 'diagram' || !selected || designOpen;
+  designEl.hidden = name !== 'diagram' || !designOpen;
+  placeDesignMarks();
   nobaseEl.hidden = name !== 'diagram' || !program.nobase;
 });
 

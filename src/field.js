@@ -93,9 +93,11 @@ const BOUND_DIRS = [
   ...[-1, 1].flatMap((x) => [-1, 1].flatMap((y) => [-1, 1].map((z) => [x, y, z].map((v) => v / Math.sqrt(3))))),
 ];
 
-export const outerBounds = (points) => BOUND_DIRS.map((n) => ({ n, c: Math.max(...points.map((p) => dot(n, p))) + MARGIN }));
+export const outerBounds = (points) => BOUND_DIRS.map((n) => ({ n, c: Math.max(...points.map((p) => dot(n, p))) + MARGIN, j: -1 }));
 
-// 씨앗마다 개척한 영역(볼록 다면체) = 반공간의 교집합. { verts, planes } — planes 는 안쪽 영역을 다시 나눌 때 경계가 된다.
+// 씨앗마다 개척한 영역(볼록 다면체) = 반공간의 교집합.
+//   { verts, planes, faces, volume, area } — planes 는 안쪽 영역을 다시 나눌 때 경계,
+//   faces 는 면마다 { j: 맞닿은 이웃 씨앗 번호(-1 = 바깥), area, centroid, normal, poly } = 물리적 접촉면.
 // bounds 를 주면 그 안에서만 개척한다 (부모 영역 안의 폴더·파일 영역).
 export function voronoi(points, bounds = outerBounds(points)) {
   return points.map((s, i) => {
@@ -105,7 +107,7 @@ export function voronoi(points, bounds = outerBounds(points)) {
       const len = Math.hypot(...d);
       if (j === i || len < 1e-9) return;
       const n = d.map((v) => v / len);
-      planes.push({ n, c: dot(n, s) + len / 2 });   // 두 씨앗의 수직이등분면 = 영역의 경계
+      planes.push({ n, c: dot(n, s) + len / 2, j });   // 두 씨앗의 수직이등분면 = 영역의 경계 = 이웃과의 접촉면
     });
     const verts = [];
     for (let a = 0; a < planes.length; a++) {
@@ -123,12 +125,36 @@ export function voronoi(points, bounds = outerBounds(points)) {
     }
     // 실제로 영역에 닿는 경계만 남긴다 (안쪽을 다시 나눌 때 계산이 가볍도록)
     const touching = planes.filter((q) => verts.some((p) => Math.abs(dot(q.n, p) - q.c) < 1e-5));
-    return { verts, planes: touching };
+    const faces = touching.map((q) => ({ ...facePolygon(verts, q), j: q.j ?? -1, normal: q.n, h: q.c - dot(q.n, s) }))
+      .filter((f) => f.area > 1e-6);
+    return {
+      verts,
+      planes: touching,
+      faces,
+      volume: faces.reduce((a, f) => a + (f.area * f.h) / 3, 0),   // 씨앗을 꼭짓점으로 한 각뿔들의 합
+      area: faces.reduce((a, f) => a + f.area, 0),
+    };
   });
 }
 
+// 평면 위에 놓인 꼭짓점들을 둘레 순서로 세워 다각형과 넓이를 구한다
+function facePolygon(verts, q) {
+  const on = [];
+  for (const p of verts) {
+    if (Math.abs(dot(q.n, p) - q.c) < 1e-5 && !on.some((o) => Math.hypot(o[0] - p[0], o[1] - p[1], o[2] - p[2]) < 1e-6)) on.push(p);
+  }
+  const centroid = [0, 1, 2].map((k) => on.reduce((a, p) => a + p[k], 0) / Math.max(on.length, 1));
+  const u0 = Math.abs(q.n[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0];
+  const u = cross(q.n, u0), w = cross(q.n, u);
+  const rel = (p) => [p[0] - centroid[0], p[1] - centroid[1], p[2] - centroid[2]];
+  const poly = on.sort((a, b) => Math.atan2(dot(rel(a), w), dot(rel(a), u)) - Math.atan2(dot(rel(b), w), dot(rel(b), u)));
+  let area = 0;
+  for (let i = 0; i < poly.length; i++) area += Math.hypot(...cross(rel(poly[i]), rel(poly[(i + 1) % poly.length]))) / 2;
+  return { poly, centroid, area: poly.length >= 3 ? area : 0 };
+}
+
 // 영역 안쪽으로 d 만큼 들인 경계 (안쪽 영역 사이에 틈을 둔다)
-export const inset = (planes, d) => planes.map((q) => ({ n: q.n, c: q.c - d }));
+export const inset = (planes, d) => planes.map((q) => ({ n: q.n, c: q.c - d, j: -1 }));
 
 // 씨앗에서 경계까지 가장 가까운 거리 = 영역에 들어가는 가장 큰 공의 반지름
 export const inradius = (s, planes) => Math.min(...planes.map((q) => q.c - dot(q.n, s)));
