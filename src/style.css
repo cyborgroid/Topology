@@ -33,6 +33,9 @@ input:focus { border-color: var(--accent); }
 .label-block[data-status="idle"] .out { color: var(--dim); }
 .label-block[data-status="error"] .out { color: #ff9b9b; }
 .label-block.selected { outline: 2px solid var(--accent); }
+.label-layer { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; pointer-events: none; text-align: right; }
+.label-layer b { font-size: 13px; letter-spacing: 0.08em; color: #fff1a8; }
+.label-layer span { font-size: 11px; color: var(--dim); }
 
 .palette { left: 12px; top: 12px; bottom: 58px; width: 270px; padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
 .palette-title { font-size: 15px; font-weight: 700; color: var(--accent); }
